@@ -1,33 +1,28 @@
 """
 Guardrail Distillation Evaluation Pipeline
-==========================================
-Evaluates segmentation models (teacher, student, KD variants) on local or
-HuggingFace-streamed datasets. Outputs per-image and aggregate metrics to CSV.
-Includes visualization utilities.
+
+Evaluates segmentation models on local or HuggingFace-streamed datasets.
+Outputs per-image and aggregate metrics to CSV with visualization utilities.
 
 Usage:
-    from eval_pipeline import run_eval, plot_results
+    from eval_pipeline import run_eval, plot_results, get_worst_k
 
-    # HF-streamed dataset
     run_eval(
         model_path="./checkpoints/student_kd",
-        dataset_path="zurich-dark/val",          # local
-        # OR dataset_path="hf://org/dark_zurich",  # streams from HF
+        dataset_path="hf://org/dark_zurich/val",
         output_csv="results/kd_darkzurich.csv",
-        num_classes=19,
     )
-
-    # Visualize
     plot_results("results/kd_darkzurich.csv", save_dir="results/figures")
+
+    worst = get_worst_k("results/kd_darkzurich.csv", k_percent=5)
 """
 
 from __future__ import annotations
 
 import csv
 import json
-import os
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterator, Optional, Callable
 
@@ -36,8 +31,6 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms as T
-
-# Config
 
 CITYSCAPES_PALETTE = [
     128, 64, 128, 244, 35, 232, 70, 70, 70, 102, 102, 156, 190, 153, 153,
@@ -59,35 +52,32 @@ LABEL_TRANSFORM = T.Compose([
 IGNORE_INDEX = 255
 
 
-# Metrics (per-image + aggregate)
-
 @dataclass
 class ImageMetrics:
     image_id: str = ""
     miou: float = 0.0
     pixel_acc: float = 0.0
     mean_acc: float = 0.0
-    msp_mean: float = 0.0          # mean softmax probability (confidence)
+    msp_mean: float = 0.0
     msp_std: float = 0.0
     entropy_mean: float = 0.0
     entropy_std: float = 0.0
-    per_class_iou: str = ""        # JSON-encoded dict
+    per_class_iou: str = ""
     num_pixels: int = 0
     num_ignored: int = 0
     inference_ms: float = 0.0
 
 
 def compute_metrics(
-    pred_logits: torch.Tensor,   # (1, C, H, W)
-    label: torch.Tensor,         # (H, W) with ignore=255
+    pred_logits: torch.Tensor,
+    label: torch.Tensor,
     num_classes: int,
     image_id: str = "",
     inference_ms: float = 0.0,
 ) -> ImageMetrics:
     """Compute segmentation + uncertainty metrics for a single image."""
-    C = num_classes
-    probs = F.softmax(pred_logits.squeeze(0), dim=0)          # (C, H, W)
-    pred = probs.argmax(dim=0)                                 # (H, W)
+    probs = F.softmax(pred_logits.squeeze(0), dim=0)
+    pred = probs.argmax(dim=0)
     label = label.squeeze()
 
     valid = label != IGNORE_INDEX
@@ -95,12 +85,10 @@ def compute_metrics(
     label_v = label[valid]
     probs_v = probs[:, valid]
 
-    # Per-class IoU
     per_class_iou = {}
     ious = []
-    for c in range(C):
-        p_c = pred_v == c
-        l_c = label_v == c
+    for c in range(num_classes):
+        p_c, l_c = pred_v == c, label_v == c
         inter = (p_c & l_c).sum().item()
         union = (p_c | l_c).sum().item()
         if union > 0:
@@ -108,39 +96,29 @@ def compute_metrics(
             ious.append(iou)
             per_class_iou[c] = round(iou, 5)
 
-    # Pixel accuracy
-    correct = (pred_v == label_v).sum().item()
     total = valid.sum().item()
-    pixel_acc = correct / max(total, 1)
+    pixel_acc = (pred_v == label_v).sum().item() / max(total, 1)
 
-    # Mean class accuracy
     class_accs = []
-    for c in range(C):
+    for c in range(num_classes):
         mask = label_v == c
         if mask.sum() > 0:
             class_accs.append((pred_v[mask] == c).float().mean().item())
     mean_acc = np.mean(class_accs) if class_accs else 0.0
 
-    # Confidence (MSP)
     max_probs = probs_v.max(dim=0).values
-    msp_mean = max_probs.mean().item()
-    msp_std = max_probs.std().item()
-
-    # Entropy
     eps = 1e-8
     ent = -(probs_v * (probs_v + eps).log()).sum(dim=0)
-    entropy_mean = ent.mean().item()
-    entropy_std = ent.std().item()
 
     return ImageMetrics(
         image_id=image_id,
         miou=np.mean(ious) if ious else 0.0,
         pixel_acc=pixel_acc,
         mean_acc=mean_acc,
-        msp_mean=msp_mean,
-        msp_std=msp_std,
-        entropy_mean=entropy_mean,
-        entropy_std=entropy_std,
+        msp_mean=max_probs.mean().item(),
+        msp_std=max_probs.std().item(),
+        entropy_mean=ent.mean().item(),
+        entropy_std=ent.std().item(),
         per_class_iou=json.dumps(per_class_iou),
         num_pixels=total,
         num_ignored=int((~valid).sum().item()),
@@ -148,16 +126,14 @@ def compute_metrics(
     )
 
 
-# Dataset Loading (local or HF streaming)
-
 def _is_hf_path(path: str) -> bool:
     return path.startswith("hf://") or path.startswith("huggingface://")
 
 
 def _parse_hf_path(path: str) -> tuple[str, Optional[str]]:
-    """Parse 'hf://org/dataset' or 'hf://org/dataset/split' -> (dataset_id, split)."""
-    cleaned = path.replace("hf://", "").replace("huggingface://", "")
-    parts = cleaned.strip("/").split("/")
+    """'hf://org/dataset[/split]' -> (dataset_id, split|None)"""
+    cleaned = path.replace("hf://", "").replace("huggingface://", "").strip("/")
+    parts = cleaned.split("/")
     if len(parts) >= 3:
         return "/".join(parts[:2]), parts[2]
     return "/".join(parts[:2]), None
@@ -175,7 +151,6 @@ def load_hf_stream(
 
     dataset_id, parsed_split = _parse_hf_path(path)
     split = split or parsed_split or "validation"
-
     ds = load_dataset(dataset_id, split=split, streaming=True, trust_remote_code=True)
 
     for i, sample in enumerate(ds):
@@ -196,13 +171,12 @@ def load_local_dataset(
     labels_subdir: str = "labels",
     max_samples: Optional[int] = None,
 ) -> Iterator[tuple[str, Image.Image, Image.Image]]:
-    """Load from local directory: path/images/, path/labels/ with matching filenames."""
+    """Load from local directory with matching image/label filenames."""
     root = Path(path)
     img_dir = root / images_subdir
     lbl_dir = root / labels_subdir
 
     if not img_dir.exists():
-        # Fallback: try leftImg8bit / gtFine style (Cityscapes)
         img_dir = root / "leftImg8bit"
         lbl_dir = root / "gtFine"
 
@@ -211,22 +185,17 @@ def load_local_dataset(
             f"Cannot find images in {root}. Expected '{images_subdir}/' or 'leftImg8bit/'."
         )
 
-    # Recursively find images
     exts = {".png", ".jpg", ".jpeg", ".webp"}
-    img_files = sorted(
-        f for f in img_dir.rglob("*") if f.suffix.lower() in exts
-    )
+    img_files = sorted(f for f in img_dir.rglob("*") if f.suffix.lower() in exts)
 
     for i, img_path in enumerate(img_files):
         if max_samples and i >= max_samples:
             break
 
-        # Find matching label
         rel = img_path.relative_to(img_dir)
         lbl_path = None
         for lbl_ext in exts:
             candidate = lbl_dir / rel.with_suffix(lbl_ext)
-            # Also try common Cityscapes naming
             cs_name = rel.stem.replace("_leftImg8bit", "_gtFine_labelIds")
             candidate2 = lbl_dir / rel.parent / (cs_name + lbl_ext)
             if candidate.exists():
@@ -237,15 +206,11 @@ def load_local_dataset(
                 break
 
         if lbl_path is None:
-            print(f"[WARN] No label found for {img_path.name}, skipping")
+            print(f"[WARN] No label for {img_path.name}, skipping")
             continue
 
-        img = Image.open(img_path).convert("RGB")
-        lbl = Image.open(lbl_path)
-        yield img_path.stem, img, lbl
+        yield img_path.stem, Image.open(img_path).convert("RGB"), Image.open(lbl_path)
 
-
-# Model Loading
 
 def load_model(
     model_path: str,
@@ -254,42 +219,26 @@ def load_model(
     model_factory: Optional[Callable] = None,
 ) -> torch.nn.Module:
     """
-    Load a segmentation model from a local path.
-
-    Supports:
-      - TorchScript (.pt/.ts): torch.jit.load
-      - State dict (.pth/.ckpt): requires model_factory to instantiate arch
-      - Full checkpoint with 'model_state_dict' or 'state_dict' key
-
-    Args:
-        model_path: Path to model file.
-        device: Target device.
-        num_classes: Number of segmentation classes.
-        model_factory: Callable() -> nn.Module, needed for state-dict checkpoints.
+    Load a segmentation model. Supports TorchScript (.pt/.ts), full nn.Module
+    pickles, and state-dict checkpoints (requires model_factory).
     """
     path = Path(model_path)
     if not path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
 
-    suffix = path.suffix.lower()
-
-    # TorchScript
-    if suffix in (".pt", ".ts"):
+    if path.suffix.lower() in (".pt", ".ts"):
         try:
             model = torch.jit.load(str(path), map_location=device)
             model.eval()
             return model
         except Exception:
-            pass  # Fall through to state_dict loading
+            pass
 
-    # State dict
     ckpt = torch.load(str(path), map_location=device, weights_only=False)
 
     if isinstance(ckpt, torch.nn.Module):
-        ckpt.eval()
-        return ckpt.to(device)
+        return ckpt.to(device).eval()
 
-    # Extract state dict from checkpoint wrapper
     if isinstance(ckpt, dict):
         for key in ("model_state_dict", "state_dict", "model"):
             if key in ckpt:
@@ -304,11 +253,8 @@ def load_model(
 
     model = model_factory()
     model.load_state_dict(ckpt, strict=False)
-    model.to(device).eval()
-    return model
+    return model.to(device).eval()
 
-
-# Core Eval Loop
 
 @torch.no_grad()
 def run_eval(
@@ -318,77 +264,50 @@ def run_eval(
     num_classes: int = 19,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     model_factory: Optional[Callable] = None,
-    batch_size: int = 1,  # kept for future batched eval
     max_samples: Optional[int] = None,
     image_transform: Optional[Callable] = None,
     label_transform: Optional[Callable] = None,
-    # HF-specific
     hf_image_key: str = "image",
     hf_label_key: str = "label",
     hf_split: Optional[str] = None,
-    # Local-specific
     images_subdir: str = "images",
     labels_subdir: str = "labels",
     model_name: Optional[str] = None,
     dataset_name: Optional[str] = None,
 ) -> Path:
-    """
-    Run evaluation and write per-image metrics to CSV.
-
-    Returns path to the output CSV.
-    """
+    """Run evaluation and write per-image metrics to CSV. Returns output path."""
     dev = torch.device(device)
     img_tf = image_transform or DEFAULT_TRANSFORM
     lbl_tf = label_transform or LABEL_TRANSFORM
 
-    # Load model
     print(f"[eval] Loading model from {model_path}")
     model = load_model(model_path, dev, num_classes, model_factory)
 
-    # Dataset iterator
     if _is_hf_path(dataset_path):
-        print(f"[eval] Streaming dataset from HuggingFace: {dataset_path}")
-        data_iter = load_hf_stream(
-            dataset_path, hf_image_key, hf_label_key, hf_split, max_samples
-        )
+        print(f"[eval] Streaming from HuggingFace: {dataset_path}")
+        data_iter = load_hf_stream(dataset_path, hf_image_key, hf_label_key, hf_split, max_samples)
     else:
         print(f"[eval] Loading local dataset: {dataset_path}")
-        data_iter = load_local_dataset(
-            dataset_path, images_subdir, labels_subdir, max_samples
-        )
+        data_iter = load_local_dataset(dataset_path, images_subdir, labels_subdir, max_samples)
 
-    # Prepare output
     out_path = Path(output_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    mn = model_name or Path(model_path).stem
+    dn = dataset_name or dataset_path
     results: list[ImageMetrics] = []
     total_time = 0.0
-    count = 0
-
-    # Header metadata
-    meta = {
-        "model_path": model_path,
-        "model_name": model_name or Path(model_path).stem,
-        "dataset_path": dataset_path,
-        "dataset_name": dataset_name or dataset_path,
-        "num_classes": num_classes,
-        "device": device,
-    }
 
     for img_id, pil_img, pil_lbl in data_iter:
-        # Preprocess
-        img_tensor = img_tf(pil_img).unsqueeze(0).to(dev)      # (1, 3, H, W)
+        img_tensor = img_tf(pil_img).unsqueeze(0).to(dev)
         lbl_np = np.array(lbl_tf(pil_lbl)).astype(np.int64)
-        lbl_tensor = torch.from_numpy(lbl_np).long().to(dev)    # (H, W)
+        lbl_tensor = torch.from_numpy(lbl_np).long().to(dev)
 
-        # Inference
         if dev.type == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
 
         out = model(img_tensor)
-
-        # Handle various output formats
         if isinstance(out, dict):
             logits = out.get("out") or out.get("logits") or next(iter(out.values()))
         elif isinstance(out, (tuple, list)):
@@ -396,66 +315,80 @@ def run_eval(
         else:
             logits = out
 
-        # Ensure logits match label spatial dims
         if logits.shape[-2:] != lbl_tensor.shape[-2:]:
-            logits = F.interpolate(
-                logits, size=lbl_tensor.shape[-2:], mode="bilinear", align_corners=False
-            )
+            logits = F.interpolate(logits, size=lbl_tensor.shape[-2:], mode="bilinear", align_corners=False)
 
         if dev.type == "cuda":
             torch.cuda.synchronize()
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        # Metrics
         m = compute_metrics(logits, lbl_tensor, num_classes, img_id, elapsed_ms)
         results.append(m)
         total_time += elapsed_ms
-        count += 1
 
-        if count % 50 == 0:
+        if len(results) % 50 == 0:
             running_miou = np.mean([r.miou for r in results])
-            print(f"  [{count}] running mIoU={running_miou:.4f}  last={elapsed_ms:.1f}ms")
+            print(f"  [{len(results)}] running mIoU={running_miou:.4f}  last={elapsed_ms:.1f}ms")
 
+    count = len(results)
     if count == 0:
         print("[eval] WARNING: No images processed.")
         return out_path
 
-    # Write CSV
-    fieldnames = list(ImageMetrics.__dataclass_fields__.keys())
-    meta_fields = ["model_name", "dataset_name"]
-
+    fieldnames = ["model_name", "dataset_name"] + list(ImageMetrics.__dataclass_fields__.keys())
     with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=meta_fields + fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in results:
             row = asdict(r)
-            row["model_name"] = meta["model_name"]
-            row["dataset_name"] = meta["dataset_name"]
+            row["model_name"] = mn
+            row["dataset_name"] = dn
             writer.writerow(row)
 
-    # Summary
     agg_miou = np.mean([r.miou for r in results])
     agg_pacc = np.mean([r.pixel_acc for r in results])
-    agg_msp = np.mean([r.msp_mean for r in results])
-    agg_ent = np.mean([r.entropy_mean for r in results])
     avg_ms = total_time / count
 
-    print(f"\n{'='*60}")
-    print(f"  Model:      {meta['model_name']}")
-    print(f"  Dataset:    {meta['dataset_name']}")
-    print(f"  Samples:    {count}")
-    print(f"  mIoU:       {agg_miou:.4f}")
-    print(f"  Pixel Acc:  {agg_pacc:.4f}")
-    print(f"  Mean MSP:   {agg_msp:.4f}")
-    print(f"  Mean Ent:   {agg_ent:.4f}")
-    print(f"  Avg Inf:    {avg_ms:.1f} ms/img")
-    print(f"  Output:     {out_path}")
-    print(f"{'='*60}\n")
+    print(f"\n  Model: {mn}  |  Dataset: {dn}  |  N={count}")
+    print(f"  mIoU={agg_miou:.4f}  PixAcc={agg_pacc:.4f}  AvgInf={avg_ms:.1f}ms")
+    print(f"  Output: {out_path}\n")
 
     return out_path
 
 
-# Visualization
+def get_worst_k(
+    csv_path: str,
+    k_percent: float = 5.0,
+    sort_by: str = "miou",
+    ascending: bool = True,
+) -> "pd.DataFrame":
+    """
+    Return the bottom k% of images ranked by a metric (default: lowest mIoU).
+
+    Args:
+        csv_path: Path to eval CSV from run_eval.
+        k_percent: Bottom percentage to return (e.g. 5.0 = worst 5%).
+        sort_by: Column to rank by. Use "miou" for most wrong, "msp_mean" for
+                 least confident, "entropy_mean" for highest uncertainty.
+        ascending: True = lowest values first (worst mIoU). Set False for
+                   metrics where higher = worse (e.g. entropy_mean).
+
+    Returns:
+        DataFrame of the worst-k% rows, sorted.
+    """
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    df = df.sort_values(sort_by, ascending=ascending).reset_index(drop=True)
+    n = max(1, int(len(df) * k_percent / 100.0))
+    worst = df.head(n).copy()
+
+    print(f"[worst_k] {n}/{len(df)} images (bottom {k_percent}% by {sort_by})")
+    print(f"  {sort_by} range: [{worst[sort_by].min():.4f}, {worst[sort_by].max():.4f}]")
+    print(f"  mean mIoU in subset: {worst['miou'].mean():.4f}")
+
+    return worst
+
 
 def plot_results(
     csv_path: str | list[str],
@@ -465,15 +398,9 @@ def plot_results(
     """
     Generate analysis plots from one or more eval CSVs.
 
-    Plots:
-      1. mIoU distribution (histogram + KDE)
-      2. Confidence vs mIoU scatter (reliability diagram proxy)
-      3. Per-class IoU bar chart
-      4. Entropy vs mIoU scatter
-      5. Risk-coverage curve (AURC)
-      6. Inference time distribution
-
-    If multiple CSVs, overlays for comparison.
+    Plots: mIoU distribution, confidence vs mIoU, per-class IoU bars,
+    entropy vs mIoU, risk-coverage curve (AURC), inference latency.
+    Writes summary.csv alongside figures.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -499,27 +426,20 @@ def plot_results(
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle("Segmentation Evaluation Results", fontsize=14, fontweight="bold")
 
-    # 1. mIoU distribution
     ax = axes[0, 0]
     for m in models:
         sub = combined[combined["model_name"] == m]
         ax.hist(sub["miou"], bins=30, alpha=0.5, label=m, edgecolor="black", linewidth=0.5)
-    ax.set_xlabel("mIoU")
-    ax.set_ylabel("Count")
-    ax.set_title("mIoU Distribution")
+    ax.set(xlabel="mIoU", ylabel="Count", title="mIoU Distribution")
     ax.legend(fontsize=8)
 
-    # 2. Confidence (MSP) vs mIoU
     ax = axes[0, 1]
     for m in models:
         sub = combined[combined["model_name"] == m]
         ax.scatter(sub["msp_mean"], sub["miou"], alpha=0.3, s=10, label=m)
-    ax.set_xlabel("Mean Softmax Prob (Confidence)")
-    ax.set_ylabel("mIoU")
-    ax.set_title("Confidence vs mIoU")
+    ax.set(xlabel="Mean Softmax Prob (Confidence)", ylabel="mIoU", title="Confidence vs mIoU")
     ax.legend(fontsize=8)
 
-    # 3. Per-class IoU (aggregate)
     ax = axes[0, 2]
     for m in models:
         sub = combined[combined["model_name"] == m]
@@ -533,50 +453,37 @@ def plot_results(
                 all_class_ious.setdefault(int(k), []).append(v)
         classes = sorted(all_class_ious.keys())
         means = [np.mean(all_class_ious[c]) for c in classes]
-        ax.bar(
-            [c + 0.2 * list(models).index(m) for c in classes],
-            means, width=0.2, alpha=0.7, label=m,
-        )
-    ax.set_xlabel("Class ID")
-    ax.set_ylabel("Mean IoU")
-    ax.set_title("Per-Class IoU")
+        offset = 0.2 * list(models).index(m)
+        ax.bar([c + offset for c in classes], means, width=0.2, alpha=0.7, label=m)
+    ax.set(xlabel="Class ID", ylabel="Mean IoU", title="Per-Class IoU")
     ax.legend(fontsize=8)
 
-    # 4. Entropy vs mIoU
     ax = axes[1, 0]
     for m in models:
         sub = combined[combined["model_name"] == m]
         ax.scatter(sub["entropy_mean"], sub["miou"], alpha=0.3, s=10, label=m)
-    ax.set_xlabel("Mean Entropy")
-    ax.set_ylabel("mIoU")
-    ax.set_title("Entropy vs mIoU")
+    ax.set(xlabel="Mean Entropy", ylabel="mIoU", title="Entropy vs mIoU")
     ax.legend(fontsize=8)
 
-    # 5. Risk-Coverage curve (using MSP as selector)
     ax = axes[1, 1]
     for m in models:
         sub = combined[combined["model_name"] == m].sort_values("msp_mean", ascending=False)
         n = len(sub)
         if n == 0:
             continue
-        risks = 1.0 - sub["miou"].values  # risk = 1 - mIoU
+        risks = 1.0 - sub["miou"].values
         coverages = np.arange(1, n + 1) / n
         cum_risk = np.cumsum(risks) / np.arange(1, n + 1)
         aurc = np.trapz(cum_risk, coverages)
         ax.plot(coverages, cum_risk, label=f"{m} (AURC={aurc:.4f})")
-    ax.set_xlabel("Coverage")
-    ax.set_ylabel("Cumulative Risk (1 - mIoU)")
-    ax.set_title("Risk-Coverage Curve")
+    ax.set(xlabel="Coverage", ylabel="Cumulative Risk (1 - mIoU)", title="Risk-Coverage Curve")
     ax.legend(fontsize=8)
 
-    # 6. Inference time
     ax = axes[1, 2]
     for m in models:
         sub = combined[combined["model_name"] == m]
         ax.hist(sub["inference_ms"], bins=30, alpha=0.5, label=m, edgecolor="black", linewidth=0.5)
-    ax.set_xlabel("Inference Time (ms)")
-    ax.set_ylabel("Count")
-    ax.set_title("Inference Latency")
+    ax.set(xlabel="Inference Time (ms)", ylabel="Count", title="Inference Latency")
     ax.legend(fontsize=8)
 
     plt.tight_layout()
@@ -590,8 +497,8 @@ def plot_results(
         plt.show()
     plt.close(fig)
 
-    # Additional: summary table
     if save_dir:
+        import pandas as pd
         summary_rows = []
         for m in models:
             sub = combined[combined["model_name"] == m]
@@ -600,7 +507,6 @@ def plot_results(
             coverages = np.arange(1, n + 1) / n
             cum_risk = np.cumsum(risks) / np.arange(1, n + 1)
             aurc = np.trapz(cum_risk, coverages) if n > 0 else 0
-
             summary_rows.append({
                 "model": m,
                 "n_images": n,
@@ -612,16 +518,10 @@ def plot_results(
                 "aurc": aurc,
                 "avg_inference_ms": sub["inference_ms"].mean(),
             })
-
-        summary_df = pd.DataFrame(summary_rows)
         summary_path = Path(save_dir) / "summary.csv"
-        summary_df.to_csv(summary_path, index=False)
+        pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
         print(f"[plot] Saved summary: {summary_path}")
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse
@@ -629,11 +529,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Guardrail Distillation Eval Pipeline")
     sub = parser.add_subparsers(dest="cmd")
 
-    # eval
     ep = sub.add_parser("eval", help="Run evaluation")
-    ep.add_argument("--model", required=True, help="Path to model checkpoint")
+    ep.add_argument("--model", required=True)
     ep.add_argument("--dataset", required=True, help="Local path or hf://org/name[/split]")
-    ep.add_argument("--output", default="results/eval.csv", help="Output CSV path")
+    ep.add_argument("--output", default="results/eval.csv")
     ep.add_argument("--num-classes", type=int, default=19)
     ep.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ep.add_argument("--max-samples", type=int, default=None)
@@ -643,11 +542,17 @@ if __name__ == "__main__":
     ep.add_argument("--hf-label-key", default="label")
     ep.add_argument("--hf-split", default=None)
 
-    # plot
     pp = sub.add_parser("plot", help="Generate plots from CSV(s)")
-    pp.add_argument("--csvs", nargs="+", required=True, help="One or more CSV files")
+    pp.add_argument("--csvs", nargs="+", required=True)
     pp.add_argument("--save-dir", default="results/figures")
     pp.add_argument("--show", action="store_true")
+
+    wp = sub.add_parser("worst", help="Get bottom k%% most wrong images")
+    wp.add_argument("--csv", required=True)
+    wp.add_argument("--k", type=float, default=5.0, help="Bottom k percent")
+    wp.add_argument("--sort-by", default="miou")
+    wp.add_argument("--descending", action="store_true", help="Higher = worse (e.g. entropy)")
+    wp.add_argument("--output", default=None, help="Save worst-k to CSV")
 
     args = parser.parse_args()
 
@@ -667,5 +572,12 @@ if __name__ == "__main__":
         )
     elif args.cmd == "plot":
         plot_results(args.csvs, save_dir=args.save_dir, show=args.show)
+    elif args.cmd == "worst":
+        worst = get_worst_k(args.csv, k_percent=args.k, sort_by=args.sort_by, ascending=not args.descending)
+        if args.output:
+            worst.to_csv(args.output, index=False)
+            print(f"[worst_k] Saved to {args.output}")
+        else:
+            print(worst[["image_id", "miou", "pixel_acc", "msp_mean", "entropy_mean"]].to_string())
     else:
         parser.print_help()
