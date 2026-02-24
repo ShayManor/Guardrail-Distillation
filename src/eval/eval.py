@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from data import DEFAULT_TRANSFORM, LABEL_TRANSFORM, is_hf_path, load_hf_stream, load_local_dataset
+from data import DEFAULT_TRANSFORM, LABEL_TRANSFORM, is_hf_path, is_kaggle_path, load_hf_stream, load_local_dataset, load_kaggle_dataset
 from analysis import ImageMetrics, compute_metrics
 
 
@@ -45,30 +45,35 @@ def _hf_processor_transform(processor):
     def transform(pil_img):
         inputs = processor(images=pil_img, return_tensors="pt")
         return inputs["pixel_values"].squeeze(0)
-
     return transform
 
 
 @torch.no_grad()
 def run_eval(
-        model_tag: str,
-        dataset_path: str,
-        output_csv: str,
-        num_classes: int = 19,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        max_samples: Optional[int] = None,
-        image_transform: Optional[Callable] = None,
-        label_transform: Optional[Callable] = None,
-        use_hf_processor: bool = True,
-        hf_image_key: str = "image",
-        hf_label_key: str = "label",
-        hf_split: Optional[str] = None,
-        images_subdir: str = "images",
-        labels_subdir: str = "labels",
-        model_name: Optional[str] = None,
-        dataset_name: Optional[str] = None,
+    model_tag: str,
+    dataset_path: str,
+    output_csv: str,
+    num_classes: int = 19,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    max_samples: Optional[int] = None,
+    image_transform: Optional[Callable] = None,
+    label_transform: Optional[Callable] = None,
+    use_hf_processor: bool = True,
+    hf_image_key: str = "image",
+    hf_label_key: str = "label",
+    hf_split: Optional[str] = None,
+    images_subdir: str = "images",
+    labels_subdir: str = "labels",
+    model_name: Optional[str] = None,
+    dataset_name: Optional[str] = None,
 ) -> Path:
-    """Run eval, write per-image metrics CSV. Returns output path."""
+    """Run eval, write per-image metrics CSV. Returns output path.
+
+    dataset_path formats:
+      - Local:  "./data/cityscapes/val"
+      - HF:    "hf://org/dataset[/split]"    (streamed, no disk usage)
+      - Kaggle: "kaggle://owner/dataset[/split]" (downloaded once to ~/.cache/kaggle_datasets/)
+    """
     dev = torch.device(device)
     model, processor = load_model(model_tag, dev, num_classes)
 
@@ -83,6 +88,9 @@ def run_eval(
     if is_hf_path(dataset_path):
         print(f"[eval] Streaming: {dataset_path}")
         data_iter = load_hf_stream(dataset_path, hf_image_key, hf_label_key, hf_split, max_samples)
+    elif is_kaggle_path(dataset_path):
+        print(f"[eval] Kaggle: {dataset_path}")
+        data_iter = load_kaggle_dataset(dataset_path, images_subdir, labels_subdir, max_samples=max_samples)
     else:
         print(f"[eval] Local: {dataset_path}")
         data_iter = load_local_dataset(dataset_path, images_subdir, labels_subdir, max_samples)
@@ -146,7 +154,7 @@ def run_eval(
             writer.writerow(row)
 
     agg_miou = np.mean([r.miou for r in results])
-    print(f"\n  {mn} on {dn}: N={count}  mIoU={agg_miou:.4f}  avg={total_time / count:.1f}ms")
+    print(f"\n  {mn} on {dn}: N={count}  mIoU={agg_miou:.4f}  avg={total_time/count:.1f}ms")
     print(f"  -> {out_path}\n")
     return out_path
 
@@ -160,7 +168,7 @@ if __name__ == "__main__":
 
     ep = sub.add_parser("eval")
     ep.add_argument("--model", required=True, help="HuggingFace model tag (cached locally)")
-    ep.add_argument("--dataset", required=True, help="Local path or hf://org/name[/split]")
+    ep.add_argument("--dataset", required=True, help="Local path, hf://org/name[/split], or kaggle://owner/dataset[/split]")
     ep.add_argument("--output", default="results/eval.csv")
     ep.add_argument("--num-classes", type=int, default=19)
     ep.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
