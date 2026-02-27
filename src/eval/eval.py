@@ -64,6 +64,7 @@ def run_eval(
     hf_split: Optional[str] = None,
     images_subdir: str = "images",
     labels_subdir: str = "labels",
+    label_map: Optional[dict[int, int]] = None,
     model_name: Optional[str] = None,
     dataset_name: Optional[str] = None,
 ) -> Path:
@@ -109,6 +110,16 @@ def run_eval(
         img_tensor = img_tensor.to(dev)
 
         lbl_np = np.array(lbl_tf(pil_lbl)).astype(np.int64)
+        if label_map is not None:
+            if isinstance(next(iter(label_map)), tuple):
+                # RGB color keys — label is an image
+                out = np.full(lbl_np.shape[:2], 255, dtype=np.int64)
+                for color, tid in label_map.items():
+                    mask = np.all(lbl_np[:, :, :3] == color, axis=-1)
+                    out[mask] = tid
+                lbl_np = out
+            else:
+                lbl_np = np.vectorize(lambda x: label_map.get(x, 255))(lbl_np)
         lbl_tensor = torch.from_numpy(lbl_np).long().to(dev)
 
         if dev.type == "cuda":
