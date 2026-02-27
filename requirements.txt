@@ -4,3 +4,4 @@ datasets
 matplotlib
 torch
 torchvision
+kaggle
