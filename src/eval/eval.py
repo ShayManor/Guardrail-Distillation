@@ -87,7 +87,7 @@ def run_eval(
     lbl_tf = label_transform or LABEL_TRANSFORM
 
     if is_hf_path(dataset_path):
-        print(f"[eval] Streaming: {dataset_path}")
+        print(f"[eval] Pulling: {dataset_path}")
         data_iter = load_hf_stream(dataset_path, hf_image_key, hf_label_key, hf_split, max_samples)
     elif is_kaggle_path(dataset_path):
         print(f"[eval] Kaggle: {dataset_path}")
@@ -108,18 +108,37 @@ def run_eval(
         if img_tensor.dim() == 3:
             img_tensor = img_tensor.unsqueeze(0)
         img_tensor = img_tensor.to(dev)
-
+        if not results:
+            raw = np.array(pil_lbl)
+            print(f"[DEBUG] raw label: shape={raw.shape} mode={pil_lbl.mode}")
+            if raw.ndim == 3:
+                unique_raw = np.unique(raw.reshape(-1, raw.shape[2]), axis=0)
+            else:
+                unique_raw = np.unique(raw)
+            print(f"[DEBUG] {len(unique_raw)} unique values in original")
         lbl_np = np.array(lbl_tf(pil_lbl)).astype(np.int64)
+        if lbl_np.ndim == 3:
+            lbl_np = lbl_np[:, :, 0]
         if label_map is not None:
             if isinstance(next(iter(label_map)), tuple):
-                # RGB color keys — label is an image
-                out = np.full(lbl_np.shape[:2], 255, dtype=np.int64)
-                for color, tid in label_map.items():
-                    mask = np.all(lbl_np[:, :, :3] == color, axis=-1)
-                    out[mask] = tid
-                lbl_np = out
+                palette = np.array(list(label_map.keys()), dtype=np.float32)
+                ids = np.array(list(label_map.values()), dtype=np.int64)
+                pixels = lbl_np[:, :, :3].reshape(-1, 3).astype(np.float32)
+                dists = np.linalg.norm(pixels[:, None] - palette[None, :], axis=2)
+                nearest_idx = dists.argmin(axis=1)
+                min_dist = dists[np.arange(len(pixels)), nearest_idx]
+                mapped = ids[nearest_idx]
+                mapped[min_dist > 30] = 255
+                lbl_np = mapped.reshape(lbl_np.shape[:2])
             else:
                 lbl_np = np.vectorize(lambda x: label_map.get(x, 255))(lbl_np)
+        # lbl_np[(lbl_np >= num_classes) & (lbl_np != 255)] = 255
+        if not results:
+            total = lbl_np.size
+            ignored = (lbl_np == 255).sum()
+            print(f"[DEBUG] shape={lbl_np.shape} ignored={ignored}/{total} ({100 * ignored / total:.1f}%)")
+            print(f"[DEBUG] unique classes: {np.unique(lbl_np)}")
+        lbl_np[lbl_np >= num_classes] = 255
         lbl_tensor = torch.from_numpy(lbl_np).long().to(dev)
 
         if dev.type == "cuda":

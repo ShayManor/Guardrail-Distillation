@@ -7,6 +7,14 @@ import numpy as np
 from PIL import Image
 from torchvision import transforms as T
 
+CITYSCAPES_LABELID_TO_TRAINID = {
+    0: 255, 1: 255, 2: 255, 3: 255, 4: 255, 5: 255, 6: 255,
+    7: 0, 8: 1, 9: 255, 10: 255, 11: 2, 12: 3, 13: 4,
+    14: 255, 15: 255, 16: 255, 17: 5, 18: 255, 19: 6, 20: 7,
+    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+    28: 15, 29: 255, 30: 255, 31: 16, 32: 17, 33: 18, -1: 255,
+}
+
 CITYSCAPES_COLOR_TO_TRAINID = {
     (128, 64, 128): 0,   (244, 35, 232): 1,   (70, 70, 70): 2,
     (102, 102, 156): 3,  (190, 153, 153): 4,  (153, 153, 153): 5,
@@ -58,7 +66,7 @@ def load_hf_stream(
 
     dataset_id, parsed_split = _parse_hf_path(path)
     split = split or parsed_split or "validation"
-    ds = load_dataset(dataset_id, split=split, streaming=True, trust_remote_code=True)
+    ds = load_dataset(dataset_id, split=split)
 
     for i, sample in enumerate(ds):
         if max_samples and i >= max_samples:
