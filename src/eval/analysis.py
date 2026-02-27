@@ -68,6 +68,7 @@ def compute_metrics(
     max_probs = probs_v.max(dim=0).values
     eps = 1e-8
     ent = -(probs_v * (probs_v + eps).log()).sum(dim=0)
+    n_valid = max_probs.numel()
 
     return ImageMetrics(
         image_id=image_id,
@@ -75,9 +76,9 @@ def compute_metrics(
         pixel_acc=pixel_acc,
         mean_acc=np.mean(class_accs) if class_accs else 0.0,
         msp_mean=max_probs.mean().item(),
-        msp_std=max_probs.std().item(),
+        msp_std=max_probs.std().item() if n_valid > 1 else 0.0,
         entropy_mean=ent.mean().item(),
-        entropy_std=ent.std().item(),
+        entropy_std=ent.std().item() if n_valid > 1 else 0.0,
         per_class_iou=json.dumps(per_class_iou),
         num_pixels=total,
         num_ignored=int((~valid).sum().item()),
@@ -180,7 +181,7 @@ def plot_results(csv_path: str | list[str], save_dir: Optional[str] = None, show
         risks = 1.0 - sub["miou"].values
         coverages = np.arange(1, n + 1) / n
         cum_risk = np.cumsum(risks) / np.arange(1, n + 1)
-        aurc = np.trapz(cum_risk, coverages)
+        aurc = np.trapezoid(cum_risk, coverages)
         ax.plot(coverages, cum_risk, label=f"{m} (AURC={aurc:.4f})")
     ax.set(xlabel="Coverage", ylabel="Cumulative Risk", title="Risk-Coverage Curve")
     ax.legend(fontsize=8)
@@ -208,7 +209,7 @@ def plot_results(csv_path: str | list[str], save_dir: Optional[str] = None, show
             risks = 1.0 - sub.sort_values("msp_mean", ascending=False)["miou"].values
             coverages = np.arange(1, n + 1) / n
             cum_risk = np.cumsum(risks) / np.arange(1, n + 1)
-            aurc = np.trapz(cum_risk, coverages) if n > 0 else 0
+            aurc = np.trapezoid(cum_risk, coverages) if n > 0 else 0
             summary_rows.append({
                 "model": m, "n_images": n,
                 "miou_mean": sub["miou"].mean(), "miou_std": sub["miou"].std(),
