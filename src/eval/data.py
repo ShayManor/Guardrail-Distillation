@@ -1,5 +1,5 @@
 """Dataset loading — local directories and HuggingFace streaming."""
-
+import os
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -105,6 +105,67 @@ def load_local_dataset(
 
         yield img_path.stem, Image.open(img_path).convert("RGB"), Image.open(lbl_path)
 
+def _find_deepest_images_dir(base: Path) -> Path:
+    """Walk down to find the deepest directory containing image files."""
+    image_exts = {".jpg", ".jpeg", ".png"}
+    best = base
+    for dirpath, _, filenames in os.walk(base):
+        if any(Path(f).suffix.lower() in image_exts for f in filenames):
+            best = Path(dirpath)
+    return best
+
+
+CITYSCAPES_PALETTE = None  # lazy-loaded
+
+def _color_label_to_ids(color_img: Image.Image) -> Image.Image:
+    """Convert Cityscapes color-coded label image to label ID image."""
+    # Cityscapes color -> trainId mapping (19 classes)
+    color_to_id = {
+        (128, 64, 128): 0,   # road
+        (244, 35, 232): 1,   # sidewalk
+        (70, 70, 70): 2,     # building
+        (102, 102, 156): 3,  # wall
+        (190, 153, 153): 4,  # fence
+        (153, 153, 153): 5,  # pole
+        (250, 170, 30): 6,   # traffic light
+        (220, 220, 0): 7,    # traffic sign
+        (107, 142, 35): 8,   # vegetation
+        (152, 251, 152): 9,  # terrain
+        (70, 130, 180): 10,  # sky
+        (220, 20, 60): 11,   # person
+        (255, 0, 0): 12,     # rider
+        (0, 0, 142): 13,     # car
+        (0, 0, 70): 14,      # truck
+        (0, 60, 100): 15,    # bus
+        (0, 80, 100): 16,    # train
+        (0, 0, 230): 17,     # motorcycle
+        (119, 11, 32): 18,   # bicycle
+    }
+    arr = np.array(color_img.convert("RGB"))
+    out = np.full(arr.shape[:2], 255, dtype=np.uint8)
+    for color, idx in color_to_id.items():
+        mask = np.all(arr == color, axis=-1)
+        out[mask] = idx
+    return Image.fromarray(out)
+
+
+def load_cityscapes_paired(
+    images_dir: Path,
+    max_samples: Optional[int] = None,
+) -> Iterator[tuple[str, Image.Image, Image.Image]]:
+    """Load side-by-side paired Cityscapes images (left=photo, right=color label)."""
+    exts = {".png", ".jpg", ".jpeg"}
+    files = sorted(f for f in images_dir.rglob("*") if f.suffix.lower() in exts)
+    for i, p in enumerate(files):
+        if max_samples and i >= max_samples:
+            break
+        img = Image.open(p).convert("RGB")
+        w, h = img.size
+        half = w // 2
+        photo = img.crop((0, 0, half, h))
+        color_lbl = img.crop((half, 0, w, h))
+        label = _color_label_to_ids(color_lbl)
+        yield p.stem, photo, label
 
 def _parse_kaggle_path(path: str) -> tuple[str, Optional[str]]:
     """'kaggle://owner/dataset[/split]' -> (owner/dataset, split|None)"""
@@ -164,5 +225,5 @@ def load_kaggle_dataset(
 
     # If split specified, look for subdir
     root = dest / split if split and (dest / split).exists() else dest
-
-    yield from load_local_dataset(str(root), images_subdir, labels_subdir, max_samples)
+    root = _find_deepest_images_dir(root)
+    yield from load_cityscapes_paired(root, max_samples)
