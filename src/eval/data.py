@@ -201,14 +201,17 @@ def load_kaggle_dataset(
     if not dest.exists():
         print(f"[kaggle] Downloading {dataset_id} -> {dest}")
         dest.mkdir(parents=True, exist_ok=True)
+        import shutil
+        kaggle_bin = shutil.which("kaggle") or "/workspace/.venv/bin/kaggle"
+
         result = subprocess.run(
-            ["kaggle", "datasets", "download", "-d", dataset_id, "-p", str(dest), "--unzip"],
+            [kaggle_bin, "datasets", "download", "-d", dataset_id, "-p", str(dest), "--unzip"],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
             # Try as competition dataset
             result = subprocess.run(
-                ["kaggle", "competitions", "download", "-c", dataset_id.split("/")[-1], "-p", str(dest)],
+                [kaggle_bin, "competitions", "download", "-c", dataset_id.split("/")[-1], "-p", str(dest)],
                 capture_output=True, text=True,
             )
             if result.returncode != 0:
