@@ -198,7 +198,7 @@ def load_kaggle_dataset(
     cache = Path(cache_dir or Path.home() / ".cache" / "kaggle_datasets")
     dest = cache / safe_name
 
-    if not dest.exists():
+    if not dest.exists() or not any(dest.iterdir()):
         print(f"[kaggle] Downloading {dataset_id} -> {dest}")
         dest.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
