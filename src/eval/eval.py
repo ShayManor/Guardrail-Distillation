@@ -83,6 +83,7 @@ def run_eval(
     hf_image_key: str = "image",
     hf_label_key: str = "label",
     hf_split: Optional[str] = None,
+    use_sliding_window: bool = False,
     images_subdir: str = "images",
     labels_subdir: str = "labels",
     label_map: Optional[dict[int, int]] = None,
@@ -170,8 +171,18 @@ def run_eval(
         if dev.type == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
-
-        logits = sliding_window_inference(model, img_tensor, num_classes=num_classes)
+        if use_sliding_window:
+            logits = sliding_window_inference(model, img_tensor, num_classes=num_classes)
+        else:
+            out = model(img_tensor)
+            if hasattr(out, "logits"):
+                logits = out.logits
+            elif isinstance(out, dict):
+                logits = out.get("out") or out.get("logits") or next(iter(out.values()))
+            elif isinstance(out, (tuple, list)):
+                logits = out[0]
+            else:
+                logits = out
         if logits.shape[-2:] != lbl_tensor.shape[-2:]:
             logits = F.interpolate(logits, size=lbl_tensor.shape[-2:], mode="bilinear", align_corners=False)
 
@@ -179,21 +190,24 @@ def run_eval(
             torch.cuda.synchronize()
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        pred = logits.argmax(dim=1).squeeze(0)
-        lab = lbl_tensor.squeeze()
-        valid = lab != 255
-        idx = (lab[valid] * num_classes + pred[valid]).view(-1).cpu()
-        conf_mat += torch.bincount(idx, minlength=num_classes * num_classes).reshape(num_classes, num_classes)
-        
+        if use_sliding_window:
+            pred = logits.argmax(dim=1).squeeze(0)
+            lab = lbl_tensor.squeeze()
+            valid = lab != 255
+            idx = (lab[valid] * num_classes + pred[valid]).view(-1).cpu()
+            conf_mat += torch.bincount(idx, minlength=num_classes * num_classes).reshape(num_classes, num_classes)
+
         results.append(compute_metrics(logits, lbl_tensor, num_classes, img_id, elapsed_ms))
         total_time += elapsed_ms
 
         if len(results) % 50 == 0:
-            # print(f"  [{len(results)}] mIoU={np.mean([r.miou for r in results]):.4f}  {elapsed_ms:.1f}ms")
-            inter = conf_mat.diag().float()
-            union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter
-            miou = (inter / union.clamp(min=1))[union > 0].mean().item()
-            print(f" [{len(results)}] mIoU={miou:.4f} {elapsed_ms:.1f}ms")
+            if use_sliding_window:
+                inter = conf_mat.diag().float()
+                union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter
+                miou = (inter / union.clamp(min=1))[union > 0].mean().item()
+            else:
+                miou = np.mean([r.miou for r in results])
+            print(f"  [{len(results)}] mIoU={miou:.4f}  {elapsed_ms:.1f}ms")
 
     count = len(results)
     if count == 0:
@@ -211,9 +225,12 @@ def run_eval(
             writer.writerow(row)
 
     # agg_miou = np.mean([r.miou for r in results])
-    inter = conf_mat.diag().float()
-    union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter
-    agg_miou = (inter / union.clamp(min=1))[union > 0].mean().item()
+    if use_sliding_window:
+        inter = conf_mat.diag().float()
+        union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter
+        agg_miou = (inter / union.clamp(min=1))[union > 0].mean().item()
+    else:
+        agg_miou = np.mean([r.miou for r in results])
     print(f"\n  {mn} on {dn}: N={count}  mIoU={agg_miou:.4f}  avg={total_time/count:.1f}ms")
     print(f"  -> {out_path}\n")
     return out_path
@@ -239,6 +256,9 @@ if __name__ == "__main__":
     ep.add_argument("--hf-image-key", default="image")
     ep.add_argument("--hf-label-key", default="label")
     ep.add_argument("--hf-split", default=None)
+    ep.add_argument("--images-subdir", default="images")
+    ep.add_argument("--labels-subdir", default="labels")
+    ep.add_argument("--sliding-window", action="store_true")
 
     pp = sub.add_parser("plot")
     pp.add_argument("--csvs", nargs="+", required=True)
@@ -260,6 +280,9 @@ if __name__ == "__main__":
             use_hf_processor=not args.no_hf_processor, model_name=args.model_name,
             dataset_name=args.dataset_name, hf_image_key=args.hf_image_key,
             hf_label_key=args.hf_label_key, hf_split=args.hf_split,
+            images_subdir=args.images_subdir,
+            labels_subdir=args.labels_subdir,
+            use_sliding_window=args.sliding_window,
         )
     elif args.cmd == "plot":
         plot_results(args.csvs, save_dir=args.save_dir)
