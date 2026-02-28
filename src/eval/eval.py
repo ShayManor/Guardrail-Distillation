@@ -33,25 +33,67 @@ def sliding_window_inference(model, img_tensor, crop_size=(1024, 1024), stride=(
 
     return logits / count
 
-def load_model(model_tag: str, device: torch.device, num_classes: int = 19):
+def load_model(model_tag: str, device: torch.device, num_classes: int = 19, do_resize=False):
     """
     Load segmentation model from HF tag (must be cached locally).
     Returns (model, processor_or_None).
     """
     from transformers import AutoModelForSemanticSegmentation, AutoImageProcessor
 
-    print(f"[model] Loading {model_tag} (local cache)")
-    try:
-        model = AutoModelForSemanticSegmentation.from_pretrained(model_tag, local_files_only=True)
-    except Exception:
-        from transformers import AutoModel
-        model = AutoModel.from_pretrained(model_tag, local_files_only=True)
+    ckpt_path = None
+    arch_tag = model_tag
+
+    # Check if it's a checkpoint path
+    if "::" in model_tag:
+        # Format: "nvidia/segformer-b0-finetuned-cityscapes-1024-1024::/path/to/finetuned.ckpt"
+        arch_tag, ckpt_path = model_tag.split("::", 1)
+    elif any(model_tag.endswith(ext) for ext in (".ckpt", ".pth", ".pt", ".bin", ".safetensors")):
+        ckpt_path = model_tag
+        arch_tag = None
+
+    if arch_tag:
+        print(f"[model] Loading architecture {arch_tag}")
+        try:
+            model = AutoModelForSemanticSegmentation.from_pretrained(arch_tag, local_files_only=True)
+        except Exception:
+            from transformers import AutoModel
+            model = AutoModel.from_pretrained(arch_tag, local_files_only=True)
+    else:
+        raise ValueError(
+            f"Cannot infer architecture from checkpoint path alone: {model_tag}\n"
+            f"Use format: 'hf_model_tag::/path/to/weights.ckpt'"
+        )
+
+    if ckpt_path:
+        print(f"[model] Loading weights from {ckpt_path}")
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        # Handle common checkpoint formats
+        if isinstance(state, dict):
+            if "state_dict" in state:
+                state = state["state_dict"]
+            elif "model_state_dict" in state:
+                state = state["model_state_dict"]
+            elif "model" in state:
+                state = state["model"]
+        # Strip "model." prefix if present (common in lightning checkpoints)
+        cleaned = {}
+        for k, v in state.items():
+            k = k.removeprefix("model.")
+            cleaned[k] = v
+        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        if missing:
+            print(f"[model] Missing keys: {len(missing)} (first 5: {missing[:5]})")
+        if unexpected:
+            print(f"[model] Unexpected keys: {len(unexpected)} (first 5: {unexpected[:5]})")
 
     model.to(device).eval()
 
     processor = None
     try:
-        processor = AutoImageProcessor.from_pretrained(model_tag, local_files_only=True, do_resize=False, use_fast=False)
+        tag_for_proc = arch_tag or model_tag.split("::")[0]
+        processor = AutoImageProcessor.from_pretrained(
+            tag_for_proc, local_files_only=True, do_resize=do_resize, use_fast=False
+        )
     except Exception:
         pass
 
@@ -84,6 +126,7 @@ def run_eval(
     hf_label_key: str = "label",
     hf_split: Optional[str] = None,
     use_sliding_window: bool = False,
+    do_resize: bool = False,
     images_subdir: str = "images",
     labels_subdir: str = "labels",
     label_map: Optional[dict[int, int]] = None,
@@ -98,7 +141,7 @@ def run_eval(
       - Kaggle: "kaggle://owner/dataset[/split]" (downloaded once to ~/.cache/kaggle_datasets/)
     """
     dev = torch.device(device)
-    model, processor = load_model(model_tag, dev, num_classes)
+    model, processor = load_model(model_tag, dev, num_classes, do_resize)
     print(f"[eval] Using transform: {'hf_processor' if use_hf_processor and processor else 'default'}")
 
     if image_transform:
