@@ -73,6 +73,8 @@ def load_hf_stream(
             break
         img = sample[image_key]
         lbl = sample[label_key]
+        arr = np.array(lbl)
+        print(f"[DEBUG] lbl type={type(lbl)} arr.shape={arr.shape} arr.ndim={arr.ndim}")
         if not isinstance(img, Image.Image):
             img = Image.fromarray(np.array(img))
         if not isinstance(lbl, Image.Image):
@@ -111,7 +113,7 @@ def load_local_dataset(
         lbl_path = None
         for lbl_ext in exts:
             candidate = lbl_dir / rel.with_suffix(lbl_ext)
-            cs_name = rel.stem.replace("_leftImg8bit", "_gtFine_labelIds")
+            cs_name = rel.stem.replace("_leftImg8bit", "_gtFine_labelTrainIds")
             candidate2 = lbl_dir / rel.parent / (cs_name + lbl_ext)
             if candidate.exists():
                 lbl_path = candidate
