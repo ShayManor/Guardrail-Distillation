@@ -30,7 +30,7 @@ def load_model(model_tag: str, device: torch.device, num_classes: int = 19):
 
     processor = None
     try:
-        processor = AutoImageProcessor.from_pretrained(model_tag, local_files_only=True)
+        processor = AutoImageProcessor.from_pretrained(model_tag, local_files_only=True, processor_kwargs={"do_resize": False})
     except Exception:
         pass
 
@@ -77,6 +77,7 @@ def run_eval(
     """
     dev = torch.device(device)
     model, processor = load_model(model_tag, dev, num_classes)
+    print(f"[eval] Using transform: {'hf_processor' if use_hf_processor and processor else 'default'}")
 
     if image_transform:
         img_tf = image_transform
@@ -108,6 +109,8 @@ def run_eval(
         if img_tensor.dim() == 3:
             img_tensor = img_tensor.unsqueeze(0)
         img_tensor = img_tensor.to(dev)
+        if not results:
+            print(f"[DEBUG] img_tensor shape: {img_tensor.shape}")
         if not results:
             raw = np.array(pil_lbl)
             print(f"[DEBUG] raw label: shape={raw.shape} mode={pil_lbl.mode}")

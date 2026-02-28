@@ -113,7 +113,7 @@ def load_local_dataset(
         lbl_path = None
         for lbl_ext in exts:
             candidate = lbl_dir / rel.with_suffix(lbl_ext)
-            cs_name = rel.stem.replace("_leftImg8bit", "_gtFine_labelTrainIds")
+            cs_name = rel.stem.replace("_leftImg8bit", "_gtFine_labelIds")
             candidate2 = lbl_dir / rel.parent / (cs_name + lbl_ext)
             if candidate.exists():
                 lbl_path = candidate
