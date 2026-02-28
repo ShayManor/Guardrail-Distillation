@@ -74,6 +74,7 @@ class KDLoss(nn.Module):
         s = F.log_softmax(student_logits / self.T, dim=1)
         t = F.softmax(teacher_logits / self.T, dim=1)
         loss = F.kl_div(s, t, reduction="batchmean") * (self.T ** 2)
+        loss = loss / (student_logits.shape[2] * student_logits.shape[3])
         return loss
 
 
