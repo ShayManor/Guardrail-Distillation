@@ -95,8 +95,8 @@ done
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 echo ""
-IMG_COUNT=$(find "$TARGET/leftImg8bit" -name "*.png" 2>/dev/null | wc -l)
-LBL_COUNT=$(find "$TARGET/gtFine" -name "*labelIds*" 2>/dev/null | wc -l)
+IMG_COUNT=$(find -L "$TARGET/leftImg8bit" -name "*.png" 2>/dev/null | wc -l)
+LBL_COUNT=$(find -L "$TARGET/gtFine" -name "*labelIds*" 2>/dev/null | wc -l)
 echo "[setup] Images: $IMG_COUNT .png files"
 echo "[setup] Labels: $LBL_COUNT labelIds files"
 
