@@ -35,15 +35,16 @@ cfg = Config(
 train_loader, val_loader = build_dataloaders(cfg)
 
 # Load from local HF cache
-teacher_raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b5-finetuned-cityscapes-1024-1024")
+teacher_raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b5-finetuned-cityscapes-1024-1024", local_files_only=True)
 teacher = HFSegModelWrapper(teacher_raw, cfg.num_classes).to(cfg.device).eval()
 
 def fresh_student():
-    raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b0-finetuned-cityscapes-512-1024")
+    raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b0-finetuned-cityscapes-512-1024", local_files_only=True)
     return HFSegModelWrapper(raw, cfg.num_classes)
 
 # Stages 1–3
 path_sup = train_supervised(fresh_student(), train_loader, val_loader, cfg)
+print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
 path_kd = train_kd(fresh_student(), teacher, train_loader, val_loader, cfg)
 path_skd = train_skd(fresh_student(), teacher, train_loader, val_loader, cfg)
 
@@ -83,3 +84,32 @@ for name, (arch, ckpt_path) in checkpoints.items():
 
 if all_csvs:
     plot_results(all_csvs, save_dir="results/figures")
+
+from src.train.eval_guardrail import run_benchmark
+
+# Load all student checkpoints
+students = {}
+for name, ckpt_path in [("student_sup", "outputs/student_sup.ckpt"),
+                          ("student_kd", "outputs/student_kd.ckpt"),
+                          ("student_skd", "outputs/student_skd.ckpt")]:
+    if os.path.exists(ckpt_path):
+        model = fresh_student()
+        load_checkpoint(model, ckpt_path, device=cfg.device)
+        students[name] = model
+
+# Load guardrail
+guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
+guard_ckpt = torch.load("outputs/guardrail.ckpt", map_location=cfg.device, weights_only=False)
+guardrail_head.load_state_dict(guard_ckpt["model"])
+
+run_benchmark(
+    students=students,
+    val_loader=val_loader,
+    num_classes=cfg.num_classes,
+    device=cfg.device,
+    teacher=teacher,
+    guardrail=guardrail_head,
+    guardrail_student_name="student_skd",  # whichever student the guardrail was trained on
+    mc_dropout_passes=0,                    # set to 5-10 to include MC Dropout baseline
+    save_dir="results/benchmark",
+)
