@@ -132,16 +132,6 @@ def run_eval(
         if img_tensor.dim() == 3:
             img_tensor = img_tensor.unsqueeze(0)
         img_tensor = img_tensor.to(dev)
-        if not results:
-            print(f"[DEBUG] img_tensor shape: {img_tensor.shape}")
-        if not results:
-            raw = np.array(pil_lbl)
-            print(f"[DEBUG] raw label: shape={raw.shape} mode={pil_lbl.mode}")
-            if raw.ndim == 3:
-                unique_raw = np.unique(raw.reshape(-1, raw.shape[2]), axis=0)
-            else:
-                unique_raw = np.unique(raw)
-            print(f"[DEBUG] {len(unique_raw)} unique values in original")
         lbl_np = np.array(lbl_tf(pil_lbl)).astype(np.int64)
         if lbl_np.ndim == 3:
             lbl_np = lbl_np[:, :, 0]
@@ -162,8 +152,9 @@ def run_eval(
         if not results:
             total = lbl_np.size
             ignored = (lbl_np == 255).sum()
-            print(f"[DEBUG] shape={lbl_np.shape} ignored={ignored}/{total} ({100 * ignored / total:.1f}%)")
-            print(f"[DEBUG] unique classes: {np.unique(lbl_np)}")
+            if ignored / total > 0.3:
+                print(f"[WARN] shape={lbl_np.shape} ignored={ignored}/{total} ({100 * ignored / total:.1f}%)")
+            print(f"[INFO] unique classes: {np.unique(lbl_np)}")
 
         lbl_np[lbl_np >= num_classes] = 255
         lbl_tensor = torch.from_numpy(lbl_np).long().to(dev)
