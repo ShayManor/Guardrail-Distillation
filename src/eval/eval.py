@@ -8,8 +8,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from data import DEFAULT_TRANSFORM, LABEL_TRANSFORM, is_hf_path, is_kaggle_path, load_hf_stream, load_local_dataset, load_kaggle_dataset
-from analysis import ImageMetrics, compute_metrics
+from src.eval.data import DEFAULT_TRANSFORM, LABEL_TRANSFORM, is_hf_path, is_kaggle_path, load_hf_stream, load_local_dataset, load_kaggle_dataset
+from src.eval.analysis import ImageMetrics, compute_metrics
 
 def sliding_window_inference(model, img_tensor, crop_size=(1024, 1024), stride=(768, 768), num_classes=19):
     """Sliding window with overlapping crops, averaging logits."""

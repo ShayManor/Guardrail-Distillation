@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from data import IGNORE_INDEX
+from src.eval.data import IGNORE_INDEX
 
 
 @dataclass
