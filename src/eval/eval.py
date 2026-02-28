@@ -11,6 +11,27 @@ import torch.nn.functional as F
 from data import DEFAULT_TRANSFORM, LABEL_TRANSFORM, is_hf_path, is_kaggle_path, load_hf_stream, load_local_dataset, load_kaggle_dataset
 from analysis import ImageMetrics, compute_metrics
 
+def sliding_window_inference(model, img_tensor, crop_size=(1024, 1024), stride=(768, 768), num_classes=19):
+    """Sliding window with overlapping crops, averaging logits."""
+    B, C, H, W = img_tensor.shape
+    logits = img_tensor.new_zeros((B, num_classes, H, W))
+    count = img_tensor.new_zeros((B, 1, H, W))
+
+    for y in range(0, H, stride[0]):
+        for x in range(0, W, stride[1]):
+            y1 = min(y, H - crop_size[0])
+            x1 = min(x, W - crop_size[1])
+            y2, x2 = y1 + crop_size[0], x1 + crop_size[1]
+
+            crop = img_tensor[:, :, y1:y2, x1:x2]
+            out = model(crop)
+            crop_logits = out.logits if hasattr(out, 'logits') else out[0]
+            crop_logits = F.interpolate(crop_logits, size=crop_size, mode='bilinear', align_corners=False)
+
+            logits[:, :, y1:y2, x1:x2] += crop_logits
+            count[:, :, y1:y2, x1:x2] += 1
+
+    return logits / count
 
 def load_model(model_tag: str, device: torch.device, num_classes: int = 19):
     """
@@ -30,7 +51,7 @@ def load_model(model_tag: str, device: torch.device, num_classes: int = 19):
 
     processor = None
     try:
-        processor = AutoImageProcessor.from_pretrained(model_tag, local_files_only=True, processor_kwargs={"do_resize": False})
+        processor = AutoImageProcessor.from_pretrained(model_tag, local_files_only=True, do_resize=False, use_fast=False)
     except Exception:
         pass
 
@@ -103,6 +124,7 @@ def run_eval(
     dn = dataset_name or dataset_path
     results: list[ImageMetrics] = []
     total_time = 0.0
+    conf_mat = torch.zeros((num_classes, num_classes), dtype=torch.int64)
 
     for img_id, pil_img, pil_lbl in data_iter:
         img_tensor = img_tf(pil_img)
@@ -141,6 +163,7 @@ def run_eval(
             ignored = (lbl_np == 255).sum()
             print(f"[DEBUG] shape={lbl_np.shape} ignored={ignored}/{total} ({100 * ignored / total:.1f}%)")
             print(f"[DEBUG] unique classes: {np.unique(lbl_np)}")
+
         lbl_np[lbl_np >= num_classes] = 255
         lbl_tensor = torch.from_numpy(lbl_np).long().to(dev)
 
@@ -148,16 +171,7 @@ def run_eval(
             torch.cuda.synchronize()
         t0 = time.perf_counter()
 
-        out = model(img_tensor)
-        if hasattr(out, "logits"):
-            logits = out.logits
-        elif isinstance(out, dict):
-            logits = out.get("out") or out.get("logits") or next(iter(out.values()))
-        elif isinstance(out, (tuple, list)):
-            logits = out[0]
-        else:
-            logits = out
-
+        logits = sliding_window_inference(model, img_tensor, num_classes=num_classes)
         if logits.shape[-2:] != lbl_tensor.shape[-2:]:
             logits = F.interpolate(logits, size=lbl_tensor.shape[-2:], mode="bilinear", align_corners=False)
 
@@ -165,11 +179,21 @@ def run_eval(
             torch.cuda.synchronize()
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
+        pred = logits.argmax(dim=1).squeeze(0)
+        lab = lbl_tensor.squeeze()
+        valid = lab != 255
+        idx = (lab[valid] * num_classes + pred[valid]).view(-1).cpu()
+        conf_mat += torch.bincount(idx, minlength=num_classes * num_classes).reshape(num_classes, num_classes)
+        
         results.append(compute_metrics(logits, lbl_tensor, num_classes, img_id, elapsed_ms))
         total_time += elapsed_ms
 
         if len(results) % 50 == 0:
-            print(f"  [{len(results)}] mIoU={np.mean([r.miou for r in results]):.4f}  {elapsed_ms:.1f}ms")
+            # print(f"  [{len(results)}] mIoU={np.mean([r.miou for r in results]):.4f}  {elapsed_ms:.1f}ms")
+            inter = conf_mat.diag().float()
+            union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter
+            miou = (inter / union.clamp(min=1))[union > 0].mean().item()
+            print(f" [{len(results)}] mIoU={miou:.4f} {elapsed_ms:.1f}ms")
 
     count = len(results)
     if count == 0:
@@ -186,7 +210,10 @@ def run_eval(
             row["dataset_name"] = dn
             writer.writerow(row)
 
-    agg_miou = np.mean([r.miou for r in results])
+    # agg_miou = np.mean([r.miou for r in results])
+    inter = conf_mat.diag().float()
+    union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter
+    agg_miou = (inter / union.clamp(min=1))[union > 0].mean().item()
     print(f"\n  {mn} on {dn}: N={count}  mIoU={agg_miou:.4f}  avg={total_time/count:.1f}ms")
     print(f"  -> {out_path}\n")
     return out_path
