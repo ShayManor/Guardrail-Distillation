@@ -15,7 +15,7 @@ from src.eval.analysis import plot_results
 import torch
 
 cfg = Config(
-    dataset_path="/workspace/data/cityscapes",
+    dataset_path="/root/Guardrail-Distillation/data/cityscapes",
     num_classes=19,
     batch_size=8,
     epochs_sup=4,
