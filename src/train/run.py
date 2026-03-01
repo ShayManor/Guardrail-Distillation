@@ -17,7 +17,7 @@ import torch
 cfg = Config(
     dataset_path="/root/Guardrail-Distillation/data/cityscapes",
     num_classes=19,
-    batch_size=4,
+    batch_size=2,
     epochs_sup=3,
     epochs_kd=3,
     epochs_skd=3,
