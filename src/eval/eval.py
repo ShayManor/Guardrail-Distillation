@@ -54,7 +54,7 @@ def load_model(model_tag: str, device: torch.device, num_classes: int = 19, do_r
     if arch_tag:
         print(f"[model] Loading architecture {arch_tag}")
         try:
-            model = AutoModelForSemanticSegmentation.from_pretrained(arch_tag, local_files_only=True)
+            model = AutoModelForSemanticSegmentation.from_pretrained(arch_tag, local_files_only=True, num_labels=num_classes, ignore_mismatched_sizes=True)
         except Exception:
             from transformers import AutoModel
             model = AutoModel.from_pretrained(arch_tag, local_files_only=True)
