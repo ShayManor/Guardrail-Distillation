@@ -19,19 +19,19 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 cfg = Config(
     dataset_path="/root/Guardrail-Distillation/data/cityscapes",
     num_classes=19,
-    batch_size=4,
-    epochs_sup=4,
-    epochs_kd=4,
-    epochs_skd=4,
-    epochs_guardrail=10,
-    lr=2e-4,
+    batch_size=10,
+    epochs_sup=10,
+    epochs_kd=10,
+    epochs_skd=10,
+    epochs_guardrail=20,
+    lr=5e-5,
     eval_every=1,
     alpha_kd=1.0,
     alpha_struct=0.5,
     kd_temperature=2.0,
     log_every=50,
     num_workers=0,
-    output_dir="outputs",
+    output_dir="outputs-mit-b0",
     device="cuda" if torch.cuda.is_available() else "cpu",
 )
 
@@ -41,10 +41,24 @@ train_loader, val_loader = build_dataloaders(cfg)
 teacher_raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b5-finetuned-cityscapes-1024-1024", local_files_only=True)
 teacher = HFSegModelWrapper(teacher_raw, cfg.num_classes).to(cfg.device).eval()
 
+# def fresh_student():
+#     raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b0-finetuned-cityscapes-512-1024", local_files_only=True)
+#     return HFSegModelWrapper(raw, cfg.num_classes)
 def fresh_student():
-    raw = AutoModelForSemanticSegmentation.from_pretrained("nvidia/segformer-b0-finetuned-cityscapes-512-1024", local_files_only=True)
-    return HFSegModelWrapper(raw, cfg.num_classes)
+    from transformers import SegformerForSemanticSegmentation, SegformerConfig
 
+    # Load ImageNet-only backbone
+    backbone = AutoModelForSemanticSegmentation.from_pretrained("nvidia/mit-b0", local_files_only=True)
+
+    # Build segmentation head from scratch for 19 classes
+    config = SegformerConfig.from_pretrained("nvidia/mit-b0", local_files_only=True)
+    config.num_labels = 19
+    model = SegformerForSemanticSegmentation(config)
+
+    # Load backbone weights, ignore missing decode head
+    model.segformer.load_state_dict(backbone.base_model.state_dict(), strict=False)
+
+    return HFSegModelWrapper(model, cfg.num_classes)
 # Stages 1–3
 path_sup = train_supervised(fresh_student(), train_loader, val_loader, cfg)
 print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
@@ -60,10 +74,10 @@ guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg
 train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg)
 
 checkpoints = {
-    "student_sup": ("nvidia/segformer-b0-finetuned-cityscapes-512-1024", "outputs/student_sup.ckpt"),
-    "student_kd":  ("nvidia/segformer-b0-finetuned-cityscapes-512-1024", "outputs/student_kd.ckpt"),
-    "student_skd": ("nvidia/segformer-b0-finetuned-cityscapes-512-1024", "outputs/student_skd.ckpt"),
-    "guardrail":   ("nvidia/segformer-b0-finetuned-cityscapes-512-1024", "outputs/guardrail.ckpt"),
+    "student_sup": ("nvidia/mit-b0", "outputs/student_sup.ckpt"),
+    "student_kd":  ("nvidia/mit-b0", "outputs/student_kd.ckpt"),
+    "student_skd": ("nvidia/mit-b0", "outputs/student_skd.ckpt"),
+    "guardrail":   ("nvidia/mit-b0", "outputs/guardrail.ckpt"),
 }
 
 all_csvs = []
