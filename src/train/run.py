@@ -27,7 +27,7 @@ cfg = Config(
     alpha_kd=1.0,
     alpha_struct=0.5,
     kd_temperature=2.0,
-    log_every=50,
+    log_every=1,
     output_dir="outputs",
     device="cuda" if torch.cuda.is_available() else "cpu",
 )
