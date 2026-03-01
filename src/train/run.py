@@ -13,6 +13,8 @@ from src.eval.eval import run_eval
 from src.eval.data import CITYSCAPES_LABELID_TO_TRAINID
 from src.eval.analysis import plot_results
 import torch
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 cfg = Config(
     dataset_path="/root/Guardrail-Distillation/data/cityscapes",
@@ -22,12 +24,12 @@ cfg = Config(
     epochs_kd=3,
     epochs_skd=3,
     epochs_guardrail=4,
-    lr=5e-4,
+    lr=3e-4,
     eval_every=1,
     alpha_kd=1.0,
     alpha_struct=0.5,
     kd_temperature=2.0,
-    log_every=1,
+    log_every=5,
     output_dir="outputs",
     device="cuda" if torch.cuda.is_available() else "cpu",
 )
