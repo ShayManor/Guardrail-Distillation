@@ -39,7 +39,8 @@ def train_skd(student, teacher, train_loader, val_loader, cfg):
             with autocast("cuda", enabled=cfg.fp16):
                 student_logits, student_feat = student(imgs, return_features=True)
                 with torch.no_grad():
-                    teacher_logits, teacher_feat = teacher(imgs, return_features=True)
+                    teacher_logits = teacher(imgs, return_features=False)
+                    teacher_feat = teacher_logits
 
                 l_sup = seg_loss(student_logits, lbls)
                 l_kd = kd_loss(student_logits, teacher_logits)
