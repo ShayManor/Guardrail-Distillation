@@ -52,8 +52,9 @@ class CityscapesDataset(Dataset):
         return mapped
 
     def __getitem__(self, idx):
-        img = Image.open(self.images[idx]).convert("RGB")
-        lbl = Image.open(self.labels[idx])
+        img = cv2.cvtColor(cv2.imread(str(self.images[idx])), cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(img)
+        lbl = Image.fromarray(cv2.imread(str(self.labels[idx]), cv2.IMREAD_UNCHANGED))
 
         # Joint random crop + flip for training
         if self.split == "train":
