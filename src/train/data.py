@@ -9,6 +9,7 @@ import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from PIL import Image
 import numpy as np
+import cv2
 
 
 # ── Cityscapes label mapping (34 → 19 train IDs) ──
