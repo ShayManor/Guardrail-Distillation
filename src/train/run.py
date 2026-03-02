@@ -198,10 +198,14 @@ def run_train_pipeline(args, cfg):
 
     if not args.skip_kd:
         print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
-        ckpts["student_kd"] = train_kd(fresh(), teacher, train_loader, val_loader, cfg)
+        student_kd = fresh()
+        load_checkpoint(student_kd, ckpts["student_sup"], device=cfg.device)
+        ckpts["student_kd"] = train_kd(student_kd, teacher, train_loader, val_loader, cfg)
 
     if not args.skip_skd:
-        ckpts["student_skd"] = train_skd(fresh(), teacher, train_loader, val_loader, cfg)
+        student_skd = fresh()
+        load_checkpoint(student_skd, ckpts["student_sup"], device=cfg.device)
+        ckpts["student_skd"] = train_skd(student_skd, teacher, train_loader, val_loader, cfg)
 
     if not args.skip_guardrail:
         best_student = fresh()

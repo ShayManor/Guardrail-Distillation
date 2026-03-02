@@ -22,7 +22,12 @@ def train_kd(student, teacher, train_loader, val_loader, cfg):
 
     seg_loss = SegLoss(alpha_ce=cfg.alpha_ce, alpha_dice=cfg.alpha_dice)
     kd_loss = KDLoss(temperature=cfg.kd_temperature)
-    optimizer = torch.optim.AdamW(student.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    backbone_params = [p for n, p in student.named_parameters() if "decode_head" not in n and p.requires_grad]
+    head_params = [p for n, p in student.named_parameters() if "decode_head" in n and p.requires_grad]
+    optimizer = torch.optim.AdamW([
+        {"params": backbone_params, "lr": cfg.lr},
+        {"params": head_params, "lr": cfg.lr * 20},
+    ], weight_decay=cfg.weight_decay)
     total_steps = cfg.epochs_kd * len(train_loader)
     scheduler = build_scheduler(optimizer, cfg, total_steps)
     scaler = GradScaler(enabled=cfg.fp16)
