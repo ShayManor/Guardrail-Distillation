@@ -66,7 +66,7 @@ def build_cfg(args):
         epochs_skd=getattr(args, "epochs_skd", 10),
         epochs_guardrail=getattr(args, "epochs_guardrail", 20),
         eval_every=getattr(args, "eval_every", 1),
-        alpha_kd=getattr(args, "alpha_kd", 1.0),
+        alpha_kd=getattr(args, "alpha_kd", 0.5),
         alpha_struct=getattr(args, "alpha_struct", 0.5),
         kd_temperature=getattr(args, "kd_temperature", 2.0),
         log_every=getattr(args, "log_every", 50),
@@ -198,14 +198,18 @@ def run_train_pipeline(args, cfg):
 
     if not args.skip_kd:
         print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
+        cfg_kd = build_cfg(args)
+        cfg_kd.lr = cfg_kd.lr * 0.5
         student_kd = fresh()
-        load_checkpoint(student_kd, ckpts["student_sup"], device=cfg.device)
-        ckpts["student_kd"] = train_kd(student_kd, teacher, train_loader, val_loader, cfg)
+        load_checkpoint(student_kd, ckpts["student_sup"], device=cfg_kd.device)
+        ckpts["student_kd"] = train_kd(student_kd, teacher, train_loader, val_loader, cfg_kd)
 
     if not args.skip_skd:
+        cfg_skd = build_cfg(args)
+        cfg_skd.lr = cfg_skd.lr * 0.5
         student_skd = fresh()
-        load_checkpoint(student_skd, ckpts["student_sup"], device=cfg.device)
-        ckpts["student_skd"] = train_skd(student_skd, teacher, train_loader, val_loader, cfg)
+        load_checkpoint(student_skd, ckpts["student_sup"], device=cfg_skd.device)
+        ckpts["student_skd"] = train_skd(student_skd, teacher, train_loader, val_loader, cfg_skd)
 
     if not args.skip_guardrail:
         best_student = fresh()

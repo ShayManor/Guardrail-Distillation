@@ -15,7 +15,12 @@ def train_supervised(student, train_loader, val_loader, cfg):
     device = cfg.device
     student = student.to(device).train()
 
-    criterion = SegLoss(alpha_ce=cfg.alpha_ce, alpha_dice=cfg.alpha_dice)
+    class_weights = torch.ones(cfg.num_classes, device=device)
+    rare_classes = [3, 4, 5, 6, 12, 14, 15, 16, 17]
+    # 3=wall, 4=fence, 5=pole, 6=traffic light, 12=rider, 14=truck, 15=bus, 16=train, 17=motorcycle
+    for c in rare_classes:
+        class_weights[c] = 3.0
+    criterion = SegLoss(alpha_ce=cfg.alpha_ce, alpha_dice=cfg.alpha_dice, class_weights=class_weights)
     backbone_params = [p for n, p in student.named_parameters() if "decode_head" not in n and p.requires_grad]
     head_params = [p for n, p in student.named_parameters() if "decode_head" in n and p.requires_grad]
     optimizer = torch.optim.AdamW([

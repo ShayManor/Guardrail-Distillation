@@ -13,9 +13,9 @@ IGNORE_INDEX = 255
 # ──────────────────────────────────────────────
 
 class CELoss(nn.Module):
-    def __init__(self, ignore_index=IGNORE_INDEX):
+    def __init__(self, ignore_index=IGNORE_INDEX, weight=None):
         super().__init__()
-        self.ce = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        self.ce = nn.CrossEntropyLoss(ignore_index=ignore_index, weight=weight)
 
     def forward(self, logits, target):
         return self.ce(logits, target)
@@ -48,9 +48,9 @@ class DiceLoss(nn.Module):
 class SegLoss(nn.Module):
     """Combined CE + Dice for supervised training."""
 
-    def __init__(self, alpha_ce=1.0, alpha_dice=0.5):
+    def __init__(self, alpha_ce=1.0, alpha_dice=0.5, class_weights=None):
         super().__init__()
-        self.ce = CELoss()
+        self.ce = CELoss(weight=class_weights)
         self.dice = DiceLoss()
         self.alpha_ce = alpha_ce
         self.alpha_dice = alpha_dice
