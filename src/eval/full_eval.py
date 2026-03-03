@@ -262,7 +262,7 @@ def compute_aurc(risks: np.ndarray, keep_scores: np.ndarray) -> Tuple[float, np.
     n = len(risks_sorted)
     coverages = np.arange(1, n + 1) / n
     cum_risk = np.cumsum(risks_sorted) / np.arange(1, n + 1)
-    aurc = float(np.trapz(cum_risk, coverages))
+    aurc = float(np.trapezoid(cum_risk, coverages))
     return aurc, coverages, cum_risk
 
 
