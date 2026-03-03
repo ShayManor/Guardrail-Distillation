@@ -442,7 +442,7 @@ def build_eval_loader(cfg: EvalConfig):
         alpha_struct=0.5,
         kd_temperature=cfg.temperature,
         log_every=100,
-        guardrail_mode="confidence",
+        guardrail_mode="gap",
     )
 
     # If your build_dataloaders already switches on dataset_name, add it here.
@@ -509,7 +509,7 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
             "Edit build_guardrail_model(...) in full_eval.py to match your repo."
         ) from exc
 
-    model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode="confidence")
+    model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode="gap")
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
     model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
     return model.to(cfg.device).eval()
