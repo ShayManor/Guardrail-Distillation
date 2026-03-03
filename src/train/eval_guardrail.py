@@ -445,7 +445,6 @@ def run_benchmark(
         writer.writeheader()
         writer.writerows(all_summary)
 
-    # ── Save confident failure CSV ──
     cfd_rows = []
     for sname, cfd in all_confident_failure.items():
         for thresh, metrics in cfd.items():
@@ -453,9 +452,17 @@ def run_benchmark(
             row.update(metrics)
             cfd_rows.append(row)
     if cfd_rows:
+        # Collect ALL fields across all rows
+        all_fields = []
+        seen = set()
+        for row in cfd_rows:
+            for k in row.keys():
+                if k not in seen:
+                    all_fields.append(k)
+                    seen.add(k)
         cfd_csv = save_path / "confident_failure_detection.csv"
         with open(cfd_csv, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=cfd_rows[0].keys())
+            writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(cfd_rows)
         print(f"\n[csv] {cfd_csv}")
