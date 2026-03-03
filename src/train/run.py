@@ -115,7 +115,9 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
     from src.train.eval_guardrail import run_benchmark
     from data import build_dataloaders
 
-    _, val_loader = build_dataloaders(cfg)
+    eval_cfg = build_cfg(args)
+    eval_cfg.num_workers = 0
+    _, val_loader = build_dataloaders(eval_cfg)
     teacher = load_teacher(args, cfg)
 
     results_dir = os.path.join(args.output_dir, "results")
