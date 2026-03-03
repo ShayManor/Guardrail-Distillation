@@ -486,7 +486,7 @@ def build_teacher_model(cfg: EvalConfig) -> Optional[nn.Module]:
         return None
     try:
         from transformers import AutoModelForSemanticSegmentation
-        from models import HFSegModelWrapper
+        from src.train.models import HFSegModelWrapper
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import your project's teacher model helpers. "
@@ -502,7 +502,7 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     if not checkpoint_path:
         return None
     try:
-        from models import GuardrailHead
+        from src.train.models import GuardrailHead
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import GuardrailHead from your repo. "
