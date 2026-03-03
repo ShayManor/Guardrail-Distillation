@@ -6,4 +6,4 @@ torch
 torchvision
 kaggle
 opencv-python
-scikit-lear
+scikit-learn
