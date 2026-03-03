@@ -57,7 +57,7 @@ Example usage
 -------------
 Evaluate one run and append all CSVs:
 
-python unified_paper_eval.py eval \
+python full_eval.py eval \
   --run-id cityscapes_val_b2_kd \
   --dataset-name cityscapes \
   --dataset-path /root/Guardrail-Distillation/data/cityscapes \
@@ -75,7 +75,7 @@ python unified_paper_eval.py eval \
 
 After evaluating all runs, make summary plots:
 
-python unified_paper_eval.py plots --output-dir paper_eval
+python full_eval.py plots --output-dir paper_eval
 """
 
 from __future__ import annotations
@@ -422,7 +422,7 @@ def build_eval_loader(cfg: EvalConfig):
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import your project's Config / build_dataloaders. "
-            "Edit build_eval_loader(...) in unified_paper_eval.py to match your repo."
+            "Edit build_eval_loader(...) in full_eval.py to match your repo."
         ) from exc
 
     project_cfg = Config(
@@ -467,7 +467,7 @@ def build_student_model(cfg: EvalConfig, checkpoint_path: str) -> nn.Module:
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import your project's student model helpers. "
-            "Edit build_student_model(...) in unified_paper_eval.py to match your repo."
+            "Edit build_student_model(...) in full_eval.py to match your repo."
         ) from exc
 
     backbone = AutoModelForSemanticSegmentation.from_pretrained(cfg.student_backbone, local_files_only=True)
@@ -490,7 +490,7 @@ def build_teacher_model(cfg: EvalConfig) -> Optional[nn.Module]:
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import your project's teacher model helpers. "
-            "Edit build_teacher_model(...) in unified_paper_eval.py to match your repo."
+            "Edit build_teacher_model(...) in full_eval.py to match your repo."
         ) from exc
 
     raw = AutoModelForSemanticSegmentation.from_pretrained(cfg.teacher_backbone, local_files_only=True)
@@ -506,7 +506,7 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import GuardrailHead from your repo. "
-            "Edit build_guardrail_model(...) in unified_paper_eval.py to match your repo."
+            "Edit build_guardrail_model(...) in full_eval.py to match your repo."
         ) from exc
 
     model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode="confidence")
