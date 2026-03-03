@@ -1,4 +1,8 @@
-python full_eval.py eval \
+cd ~/Guardrail-Distillation
+
+PYTHONPATH=/root/Guardrail-Distillation:/root/Guardrail-Distillation/src:/root/Guardrail-Distillation/src/train \
+
+python -m src.eval.full_eval eval \
   --run-id city_b0_sup \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
@@ -8,7 +12,7 @@ python full_eval.py eval \
   --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
   --output-dir cs_b0_b2_eval
 
-python full_eval.py eval \
+python -m src.eval.full_eval eval \
   --run-id city_b0_kd \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
@@ -18,7 +22,7 @@ python full_eval.py eval \
   --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
   --output-dir cs_b0_b2_eval
 
-python full_eval.py eval \
+python -m src.eval.full_eval eval \
   --run-id city_b0_skd \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
@@ -32,7 +36,7 @@ python full_eval.py eval \
   --mc-dropout-passes 8 \
   --output-dir cs_b0_b2_eval
   
-  python full_eval.py eval \
+  python -m src.eval.full_eval eval \
   --run-id city_b0_sup \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
@@ -42,7 +46,7 @@ python full_eval.py eval \
   --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
   --output-dir cs_b0_b2_eval
 
-python full_eval.py eval \
+python -m src.eval.full_eval eval \
   --run-id city_b0_kd \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
@@ -52,7 +56,7 @@ python full_eval.py eval \
   --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
   --output-dir cs_b0_b2_eval
 
-python full_eval.py eval \
+python -m src.eval.full_eval eval \
   --run-id city_b0_skd \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
