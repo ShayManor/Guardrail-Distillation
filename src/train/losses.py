@@ -168,11 +168,6 @@ class GuardrailLoss(nn.Module):
 
 
 def compute_guardrail_targets(student_logits, teacher_logits, gt, mode="gap"):
-    """
-    Compute guardrail supervision from teacher/student predictions and GT.
-
-    Returns dict of target tensors.
-    """
     ignore_mask = gt == IGNORE_INDEX
     gt_safe = gt.clone()
     gt_safe[ignore_mask] = 0
@@ -186,13 +181,24 @@ def compute_guardrail_targets(student_logits, teacher_logits, gt, mode="gap"):
     targets = {}
 
     if mode in ("gap", "both"):
-        # Per-pixel CE loss difference
         student_ce = F.cross_entropy(student_logits, gt_safe, reduction="none")
         teacher_ce = F.cross_entropy(teacher_logits, gt_safe, reduction="none")
         gap = (student_ce - teacher_ce).clamp(min=0)
         gap[ignore_mask] = 0
+
+        # ── NORMALIZE to [0, 1] range ──
+        # Per-image normalization so sigmoid target is valid
+        B = gap.shape[0]
+        for i in range(B):
+            valid = ~ignore_mask[i]
+            if valid.any():
+                g_max = gap[i][valid].max()
+                if g_max > 0:
+                    gap[i] = gap[i] / g_max
+
         targets["gap_map"] = gap
-        targets["risk_label"] = gap.mean(dim=(1, 2))  # image-level
+        # risk_label: fraction of pixels with significant gap (binary-ish, naturally 0-1)
+        targets["risk_label"] = (gap > 0.1).float().sum(dim=(1, 2)) / (~ignore_mask).float().sum(dim=(1, 2)).clamp(min=1)
 
     if mode in ("binary", "both"):
         binary = (teacher_correct & ~student_correct).float()

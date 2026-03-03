@@ -34,7 +34,7 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
         p.requires_grad = False
 
     criterion = GuardrailLoss(mode=cfg.guardrail_mode)
-    optimizer = torch.optim.AdamW(guardrail.parameters(), lr=cfg.lr * 0.1, weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(guardrail.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     total_steps = cfg.epochs_guardrail * len(train_loader)
     scheduler = build_scheduler(optimizer, cfg, total_steps)
     scaler = GradScaler(enabled=cfg.fp16)

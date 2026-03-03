@@ -166,7 +166,7 @@ class GuardrailHead(nn.Module):
         out = {"risk_score": self.risk_head(enc)}
 
         if hasattr(self, "gap_head"):
-            out["gap_heatmap"] = self.gap_head(enc).squeeze(1)  # (B, H, W)
+            out["gap_heatmap"] = torch.sigmoid(self.gap_head(enc).squeeze(1))  # (B, H, W)
         if hasattr(self, "binary_head"):
             out["binary_heatmap"] = torch.sigmoid(self.binary_head(enc).squeeze(1))
 
