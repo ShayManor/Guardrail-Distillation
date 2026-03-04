@@ -32,7 +32,7 @@ python -m src.eval.full_eval eval \
   --student-ckpt outputs-mit-b0-v3/student_skd.ckpt \
   --train-method skd \
   --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
-  --guardrail-ckpt outputs-mit-b0/guardrail.ckpt \
+  --guardrail-ckpt outputs-mit-b0-v3/guardrail.ckpt \
   --seeds 42,137,256 \
   --guardrail-student-name student_skd \
   --temperature 2.0 \
