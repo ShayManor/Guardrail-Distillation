@@ -11,8 +11,8 @@
 set -euo pipefail
 
 TARGET="${1:-./data/cityscapes}"
-IMG_DATASET="datasets--ShayManor--leftImg8bit_trainvaltest"
-LBL_DATASET="datasets--ShayManor--gtFine_trainvaltest"
+IMG_DATASET="datasets--ShayManor--gt_trainval"
+LBL_DATASET="datasets--ShayManor--rgb_anon_trainvaltest"
 
 # ── Locate HF cache ──────────────────────────────────────────────────────────
 find_hf_cache() {

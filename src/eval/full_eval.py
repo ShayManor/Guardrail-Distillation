@@ -446,6 +446,7 @@ class EvalConfig:
     dataset_name: str
     dataset_path: str
     split: str
+    domain: str
     batch_size: int
     num_workers: int
     num_classes: int
@@ -469,15 +470,14 @@ class ForwardAdapter(nn.Module):
 
 def build_eval_loader(cfg: EvalConfig):
     """
-    Default: try to use the repository's existing data.build_dataloaders.
-
-    Expected batch formats supported by the evaluator:
-      - (images, labels)
-      - (images, labels, metas)
-      - dict with keys {'image','label'} or {'images','labels'} plus optional 'meta'
-
-    If your ACDC / Dark Zurich loading differs, edit this function only.
+    Build validation DataLoader.
+    - cityscapes: delegates to project's build_dataloaders
+    - acdc: builds ACDCDataset directly (fog/night/rain/snow/all)
     """
+    if cfg.dataset_name == "acdc":
+        return _build_acdc_loader(cfg)
+
+    # ── Cityscapes (default) ─────────────────────────────────────────────
     try:
         from src.train.config import Config
         from src.train.data import build_dataloaders
@@ -507,7 +507,6 @@ def build_eval_loader(cfg: EvalConfig):
         guardrail_mode="gap",
     )
 
-    # If your build_dataloaders already switches on dataset_name, add it here.
     if hasattr(project_cfg, "dataset_name"):
         setattr(project_cfg, "dataset_name", cfg.dataset_name)
     if hasattr(project_cfg, "split"):
@@ -515,6 +514,128 @@ def build_eval_loader(cfg: EvalConfig):
 
     _, val_loader = build_dataloaders(project_cfg)
     return val_loader
+
+
+# ── ACDC dataset & loader ────────────────────────────────────────────────────
+
+ACDC_CONDITIONS = ("fog", "night", "rain", "snow")
+
+
+def _build_acdc_loader(cfg: EvalConfig):
+    """Build a DataLoader for ACDC adverse-conditions dataset."""
+    from PIL import Image
+    import torchvision.transforms as T
+    import torchvision.transforms.functional as TF
+
+    # Map domain arg to condition filter
+    condition = cfg.domain if cfg.domain in ACDC_CONDITIONS else "all"
+
+    root = Path(cfg.dataset_path)
+    conditions = ACDC_CONDITIONS if condition == "all" else (condition,)
+
+    images, labels, conds = [], [], []
+    uses_raw_label_ids = False  # True if falling back to _gt_labelIds.png
+    for cond in conditions:
+        img_dir = root / "rgb_anon" / cond / cfg.split
+        lbl_dir = root / "gt" / cond / cfg.split
+
+        if not img_dir.exists():
+            print(f"[ACDC] WARNING: {img_dir} not found, skipping")
+            continue
+
+        for img_path in sorted(img_dir.rglob("*_rgb_anon.png")):
+            rel = img_path.relative_to(img_dir)
+            # labelTrainIds already mapped to 0-18 + 255
+            lbl_name = img_path.name.replace("_rgb_anon.png", "_gt_labelTrainIds.png")
+            lbl_path = lbl_dir / rel.parent / lbl_name
+            if not lbl_path.exists():
+                # Fallback to _gt_labelIds.png (raw Cityscapes IDs, needs mapping)
+                lbl_name = img_path.name.replace("_rgb_anon.png", "_gt_labelIds.png")
+                lbl_path = lbl_dir / rel.parent / lbl_name
+                if not lbl_path.exists():
+                    continue
+                uses_raw_label_ids = True
+            images.append(str(img_path))
+            labels.append(str(lbl_path))
+            conds.append(cond)
+
+    if not images:
+        raise FileNotFoundError(
+            f"No ACDC images found at {root}/rgb_anon/*/{ cfg.split}/\n"
+            f"Run: bash setup_acdc.sh ./data/acdc /path/to/extracted/acdc"
+        )
+
+    per_cond = {c: conds.count(c) for c in conditions}
+    print(f"[ACDC] {cfg.split} condition={condition}: {len(images)} images "
+          f"({', '.join(f'{c}={n}' for c, n in per_cond.items())})")
+    if uses_raw_label_ids:
+        print("[ACDC] WARNING: Using _gt_labelIds.png (raw IDs) — applying Cityscapes label mapping")
+
+    normalize = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+    # Cityscapes raw-ID → trainId LUT (only needed if labelTrainIds unavailable)
+    _acdc_label_lut = None
+    if uses_raw_label_ids:
+        try:
+            from src.train.data import _LABEL_LUT
+            _acdc_label_lut = _LABEL_LUT
+        except ImportError:
+            # Inline Cityscapes label map: raw_id → train_id
+            _CS_MAP = {
+                7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5, 19: 6, 20: 7,
+                21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+                28: 15, 31: 16, 32: 17, 33: 18,
+            }
+            _acdc_label_lut = np.full(256, 255, dtype=np.uint8)
+            for k, v in _CS_MAP.items():
+                _acdc_label_lut[k] = v
+
+    class _ACDCDataset(torch.utils.data.Dataset):
+        def __init__(self, imgs, lbls, conds, img_size=(512, 512), label_lut=None):
+            self.images = imgs
+            self.labels = lbls
+            self.conditions = conds
+            self.img_size = img_size
+            self.label_lut = label_lut  # None if labelTrainIds, LUT if raw labelIds
+
+        def __len__(self):
+            return len(self.images)
+
+        def __getitem__(self, idx):
+            img = Image.open(self.images[idx]).convert("RGB")
+            lbl = Image.open(self.labels[idx])
+
+            if self.img_size:
+                img = TF.resize(img, self.img_size,
+                                interpolation=TF.InterpolationMode.BILINEAR)
+                lbl = TF.resize(lbl, self.img_size,
+                                interpolation=TF.InterpolationMode.NEAREST)
+
+            img = TF.to_tensor(img)
+            img = normalize(img)
+
+            lbl_np = np.array(lbl, dtype=np.uint8)
+            if self.label_lut is not None:
+                lbl_np = self.label_lut[lbl_np]
+            lbl = torch.from_numpy(lbl_np.astype(np.int64)).long()
+
+            meta = {
+                "image_id": Path(self.images[idx]).stem,
+                "path": self.images[idx],
+                "condition": self.conditions[idx],
+            }
+            return img, lbl, meta
+
+    ds = _ACDCDataset(images, labels, conds, img_size=(512, 512),
+                      label_lut=_acdc_label_lut)
+    return torch.utils.data.DataLoader(
+        ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
 
 
 def build_student_model(cfg: EvalConfig, checkpoint_path: str) -> nn.Module:
@@ -667,6 +788,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         dataset_name=args.dataset_name,
         dataset_path=args.dataset_path,
         split=args.split,
+        domain=args.domain,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         num_classes=args.num_classes,
@@ -889,6 +1011,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "train_method": args.train_method,
                 "image_id": image_id,
                 "image_path": image_path,
+                "condition": meta.get("condition", ""),
                 "student_miou": student_miou,
                 "student_risk": student_risk,
                 "student_pixel_acc": student_acc,
