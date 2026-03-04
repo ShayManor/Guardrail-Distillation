@@ -927,7 +927,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         mc_mutual_infos: Optional[List[float]] = None
         if args.mc_dropout_passes > 0:
             probs_samples: List[torch.Tensor] = []
-            student.train()
+            student.eval()
             enable_dropout_only(student)
             with Timer(cfg.device) as t_mc:
                 with torch.no_grad():
