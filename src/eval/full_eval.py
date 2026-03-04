@@ -726,10 +726,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             probs_samples: List[torch.Tensor] = []
             student.train()
             enable_dropout_only(student)
-            for _ in range(int(args.mc_dropout_passes)):
-                mc_out = student(images)
-                mc_logits = mc_out[0] if isinstance(mc_out, tuple) else mc_out
-                probs_samples.append(F.softmax(mc_logits, dim=1))
+            with torch.no_grad():
+                for _ in range(int(args.mc_dropout_passes)):
+                    mc_out = student(images)
+                    mc_logits = mc_out[0] if isinstance(mc_out, tuple) else mc_out
+                    probs_samples.append(F.softmax(mc_logits, dim=1))
             student.eval()
             probs_stack = torch.stack(probs_samples, dim=0)  # [T, B, C, H, W]
             probs_mean = probs_stack.mean(dim=0)
