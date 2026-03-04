@@ -99,6 +99,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -272,7 +273,8 @@ def risk_at_coverage(risks: np.ndarray, keep_scores: np.ndarray, coverage: float
     return float(np.mean(risks[order[:k]]))
 
 
-def make_calibration_bins(pred_quality: np.ndarray, actual_quality: np.ndarray, n_bins: int = 10) -> List[Dict[str, Any]]:
+def make_calibration_bins(pred_quality: np.ndarray, actual_quality: np.ndarray, n_bins: int = 10) -> List[
+    Dict[str, Any]]:
     bins = np.linspace(0.0, 1.0, n_bins + 1)
     rows: List[Dict[str, Any]] = []
     for i in range(n_bins):
@@ -320,10 +322,10 @@ def expected_calibration_error(bin_rows: Sequence[Dict[str, Any]]) -> float:
 
 
 def compute_confident_failure_table(
-    df_img: pd.DataFrame,
-    thresholds: Sequence[float],
-    score_cols: Dict[str, str],
-    failure_label: str = "top20",
+        df_img: pd.DataFrame,
+        thresholds: Sequence[float],
+        score_cols: Dict[str, str],
+        failure_label: str = "top20",
 ) -> List[Dict[str, Any]]:
     """
     Labels 'failure' among confident examples.
@@ -520,7 +522,8 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
 # =============================================================================
 
 
-def unpack_batch(batch: Any, batch_idx: int, base_index: int) -> Tuple[torch.Tensor, torch.Tensor, List[Dict[str, Any]]]:
+def unpack_batch(batch: Any, batch_idx: int, base_index: int) -> Tuple[
+    torch.Tensor, torch.Tensor, List[Dict[str, Any]]]:
     if isinstance(batch, dict):
         if "image" in batch:
             images = batch["image"]
@@ -726,17 +729,18 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             probs_samples: List[torch.Tensor] = []
             student.train()
             enable_dropout_only(student)
-            with torch.no_grad():
-                for _ in range(int(args.mc_dropout_passes)):
-                    mc_out = student(images)
-                    mc_logits = mc_out[0] if isinstance(mc_out, tuple) else mc_out
-                    probs_samples.append(F.softmax(mc_logits, dim=1))
+            with Timer(cfg.device) as t_mc:
+                with torch.no_grad():
+                    for _ in range(int(args.mc_dropout_passes)):
+                        mc_out = student(images)
+                        mc_logits = mc_out[0] if isinstance(mc_out, tuple) else mc_out
+                        probs_samples.append(F.softmax(mc_logits, dim=1))
             student.eval()
             probs_stack = torch.stack(probs_samples, dim=0)  # [T, B, C, H, W]
             probs_mean = probs_stack.mean(dim=0)
             pred_entropy = -(probs_mean * (probs_mean + EPS).log()).sum(dim=1)
             exp_entropy = -(
-                probs_stack * (probs_stack + EPS).log()
+                    probs_stack * (probs_stack + EPS).log()
             ).sum(dim=2).mean(dim=0)
             mutual_info = pred_entropy - exp_entropy
             mc_entropies = []
@@ -749,6 +753,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 else:
                     mc_entropies.append(float(pred_entropy[i][valid].mean().item()))
                     mc_mutual_infos.append(float(mutual_info[i][valid].mean().item()))
+                    mc_latency_per_img = t_mc.ms / max(bsz, 1)
 
         student_probs = F.softmax(student_logits, dim=1)
         temp_probs = F.softmax(temp_logits, dim=1)
@@ -814,6 +819,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             if mc_entropies is not None and mc_mutual_infos is not None:
                 row["mc_entropy"] = float(mc_entropies[i])
                 row["mc_mutual_info"] = float(mc_mutual_infos[i])
+                row["mc_dropout_latency_ms"] = float(mc_latency_per_img)
 
             if guard_raw is not None:
                 if isinstance(guard_raw, dict):
@@ -859,7 +865,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     "oracle_keep": 1.0 - max(student_risk - teacher_risk, 0.0),
                     "oracle_fail": max(student_risk - teacher_risk, 0.0),
                     "disagreement_rate": float(disagreement_mask.float().mean().item()),
-                    "confident_wrong_teacher_right": float(cwt_mask.float().mean().item()) if int(confident_mask.sum()) > 0 else 0.0,
+                    "confident_wrong_teacher_right": float(cwt_mask.float().mean().item()) if int(
+                        confident_mask.sum()) > 0 else 0.0,
                     "n_confident_pixels": int(confident_mask.sum().item()),
                 })
                 row["teacher_gain"] = row["teacher_benefit"]
@@ -986,11 +993,16 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 teacher_on_selected_risk[selected] = teacher_risk_arr[selected]
 
             student_lat = df_img["student_latency_ms"].values.astype(float)
-            guard_lat = df_img["guardrail_latency_ms"].values.astype(float) if "guardrail_latency_ms" in df_img else np.zeros(n)
-            teacher_lat = df_img["teacher_latency_ms"].values.astype(float) if "teacher_latency_ms" in df_img else np.zeros(n)
+            guard_lat = df_img["guardrail_latency_ms"].values.astype(
+                float) if "guardrail_latency_ms" in df_img else np.zeros(n)
+            teacher_lat = df_img["teacher_latency_ms"].values.astype(
+                float) if "teacher_latency_ms" in df_img else np.zeros(n)
 
             method_guard_cost = guard_lat if method == "guardrail" else np.zeros(n)
-            total_lat = student_lat + method_guard_cost + selected.astype(float) * teacher_lat
+            mc_lat = df_img["mc_dropout_latency_ms"].values.astype(
+                float) if "mc_dropout_latency_ms" in df_img else np.zeros(n)
+            method_mc_cost = mc_lat if method == "mc_dropout" else np.zeros(n)
+            total_lat = student_lat + method_guard_cost + method_mc_cost + selected.astype(float) * teacher_lat
 
             budget_rows.append({
                 "run_id": args.run_id,
@@ -1009,7 +1021,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "p95_latency_ms": percentile(total_lat, 95),
                 "p99_latency_ms": percentile(total_lat, 99),
                 "benefit_recovered": benefit_recovered,
-                "benefit_recovered_frac": float(benefit_recovered / max(total_teacher_benefit, EPS)) if teacher_available else 0.0,
+                "benefit_recovered_frac": float(
+                    benefit_recovered / max(total_teacher_benefit, EPS)) if teacher_available else 0.0,
                 "total_teacher_benefit": total_teacher_benefit,
             })
 
@@ -1067,7 +1080,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if "oracle_fail" in df_fail.columns:
         score_cols["oracle"] = "oracle_fail"
 
-    confident_rows_raw = compute_confident_failure_table(df_fail, conf_thresholds, score_cols, failure_label=args.failure_label)
+    confident_rows_raw = compute_confident_failure_table(df_fail, conf_thresholds, score_cols,
+                                                         failure_label=args.failure_label)
     confident_rows: List[Dict[str, Any]] = []
     for r in confident_rows_raw:
         confident_rows.append({
@@ -1111,7 +1125,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "student_entropy": float(df_img["student_entropy"].mean()),
         "student_latency_ms": float(df_img["student_latency_ms"].mean()),
         "student_latency_p95_ms": percentile(df_img["student_latency_ms"].values, 95),
-        "guardrail_latency_ms": float(df_img["guardrail_latency_ms"].mean()) if "guardrail_latency_ms" in df_img else 0.0,
+        "guardrail_latency_ms": float(
+            df_img["guardrail_latency_ms"].mean()) if "guardrail_latency_ms" in df_img else 0.0,
         "teacher_latency_ms": float(df_img["teacher_latency_ms"].mean()) if "teacher_latency_ms" in df_img else 0.0,
         "msp_aurc": float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "msp")),
         "entropy_aurc": float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "neg_entropy")),
@@ -1126,7 +1141,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         run_row["guardrail_aurc"] = float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "guardrail"))
         run_row["guardrail_risk"] = float(df_img["guardrail_risk"].mean())
         run_row["guardrail_ece"] = float(run_ece.get("guardrail", 0.0))
-        corr = np.corrcoef(df_img["guardrail_risk"].values.astype(float), df_img["student_risk"].values.astype(float))[0, 1]
+        corr = np.corrcoef(df_img["guardrail_risk"].values.astype(float), df_img["student_risk"].values.astype(float))[
+            0, 1]
         run_row["guardrail_vs_risk_corr"] = float(corr) if not math.isnan(corr) else 0.0
     if "teacher_miou" in df_img.columns:
         run_row["teacher_miou"] = float(df_img["teacher_miou"].mean())
@@ -1141,9 +1157,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             for method in ["msp", "entropy", "temp_msp", "mc_dropout", "guardrail", "oracle"]:
                 match = [r for r in subset if r["method"] == method]
                 if match:
-                    run_row[f"{method}_benefit_at_{int(budget*100)}"] = float(match[0]["benefit_recovered_frac"])
-                    run_row[f"{method}_miou_at_{int(budget*100)}"] = float(match[0]["effective_miou"])
-                    run_row[f"{method}_lat_at_{int(budget*100)}"] = float(match[0]["avg_latency_ms"])
+                    run_row[f"{method}_benefit_at_{int(budget * 100)}"] = float(match[0]["benefit_recovered_frac"])
+                    run_row[f"{method}_miou_at_{int(budget * 100)}"] = float(match[0]["effective_miou"])
+                    run_row[f"{method}_lat_at_{int(budget * 100)}"] = float(match[0]["avg_latency_ms"])
 
     # -------------------------------------------------------------------------
     # Save / upsert all CSVs
@@ -1177,12 +1193,12 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
 
 
 def quick_plot_for_run(
-    df_img: pd.DataFrame,
-    risk_cov_rows: pd.DataFrame,
-    budget_rows: pd.DataFrame,
-    confident_rows: pd.DataFrame,
-    save_path: Path,
-    title: str,
+        df_img: pd.DataFrame,
+        risk_cov_rows: pd.DataFrame,
+        budget_rows: pd.DataFrame,
+        confident_rows: pd.DataFrame,
+        save_path: Path,
+        title: str,
 ) -> None:
     fig = plt.figure(figsize=(16, 10))
 
@@ -1256,7 +1272,8 @@ def make_all_plots(output_dir: str) -> None:
     # ------------------------------------------------------------------
     # Figure 1: Pareto by dataset (use 10% teacher budget as main op point)
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()), figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
+    fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()),
+                             figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
     for ax, (dataset, sub) in zip(axes[0], df_budget.groupby("dataset_name")):
         op = sub[np.isclose(sub["teacher_budget"], 0.10)]
         for method, msub in op.groupby("method"):
@@ -1275,7 +1292,8 @@ def make_all_plots(output_dir: str) -> None:
     # ------------------------------------------------------------------
     # Figure 2: Teacher budget -> benefit recovered by dataset
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()), figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
+    fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()),
+                             figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
     for ax, (dataset, sub) in zip(axes[0], df_budget.groupby("dataset_name")):
         agg = sub.groupby(["teacher_budget", "method"], as_index=False)["benefit_recovered_frac"].mean()
         for method, msub in agg.groupby("method"):
@@ -1292,7 +1310,8 @@ def make_all_plots(output_dir: str) -> None:
     # ------------------------------------------------------------------
     # Figure 3: Teacher budget -> effective mIoU by dataset
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()), figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
+    fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()),
+                             figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
     for ax, (dataset, sub) in zip(axes[0], df_budget.groupby("dataset_name")):
         agg = sub.groupby(["teacher_budget", "method"], as_index=False)["effective_miou"].mean()
         for method, msub in agg.groupby("method"):
@@ -1433,7 +1452,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--num-workers", type=int, default=0)
     p_eval.add_argument("--temperature", type=float, default=2.0)
     p_eval.add_argument("--mc-dropout-passes", type=int, default=0)
-    p_eval.add_argument("--teacher-budgets", default=None, help="Comma-separated list, e.g. 0,0.01,0.05,0.1,0.2,0.5,1.0")
+    p_eval.add_argument("--teacher-budgets", default=None,
+                        help="Comma-separated list, e.g. 0,0.01,0.05,0.1,0.2,0.5,1.0")
     p_eval.add_argument("--coverages", default=None, help="Comma-separated list for risk-coverage output")
     p_eval.add_argument("--confident-thresholds", default=None, help="Comma-separated list, e.g. 0.9,0.95,0.97")
     p_eval.add_argument("--failure-label", default="top20", choices=["median", "top20", "top10"])

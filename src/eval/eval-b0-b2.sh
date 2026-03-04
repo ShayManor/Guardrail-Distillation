@@ -37,7 +37,7 @@ python -m src.eval.full_eval eval \
   --output-dir cs_b0_b2_eval
 
   python -m src.eval.full_eval eval \
-  --run-id city_b0_sup \
+  --run-id city_b1_sup \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
   --student-name student_sup --student-backbone nvidia/mit-b1 \
@@ -47,7 +47,7 @@ python -m src.eval.full_eval eval \
   --output-dir cs_b0_b2_eval
 
 python -m src.eval.full_eval eval \
-  --run-id city_b0_kd \
+  --run-id city_b1_kd \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
   --student-name student_kd --student-backbone nvidia/mit-b1 \
@@ -57,7 +57,7 @@ python -m src.eval.full_eval eval \
   --output-dir cs_b0_b2_eval
 
 python -m src.eval.full_eval eval \
-  --run-id city_b0_skd \
+  --run-id city_b1_skd \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
   --student-name student_skd --student-backbone nvidia/mit-b1 \
@@ -71,7 +71,7 @@ python -m src.eval.full_eval eval \
   --output-dir cs_b0_b2_eval
   
   python -m src.eval.full_eval eval \
-  --run-id city_b0_sup \
+  --run-id city_b2_sup \
   --dataset-name cityscapes --dataset-path /root/Guardrail-Distillation/data/cityscapes \
   --split val --domain in_domain \
   --student-name student_sup --student-backbone nvidia/mit-b2 \
