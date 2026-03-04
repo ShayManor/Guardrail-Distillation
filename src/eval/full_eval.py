@@ -691,6 +691,18 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     print(f"[eval] student={args.student_name} backbone={args.student_backbone}")
 
     loader = build_eval_loader(cfg)
+
+    # Try to extract image file paths from the dataset for per-image tracking
+    _dataset_paths: List[str] = []
+    try:
+        ds = loader.dataset
+        for attr in ("images", "img_files", "image_paths", "filenames", "imgs"):
+            if hasattr(ds, attr):
+                _dataset_paths = [str(p) for p in getattr(ds, attr)]
+                break
+    except Exception:
+        pass
+
     student = build_student_model(cfg, args.student_ckpt)
     teacher = build_teacher_model(cfg)
     guardrail = build_guardrail_model(cfg, args.guardrail_ckpt)
@@ -728,6 +740,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     class_inter = np.zeros(cfg.num_classes, dtype=np.int64)
     class_union = np.zeros(cfg.num_classes, dtype=np.int64)
     class_support = np.zeros(cfg.num_classes, dtype=np.int64)
+    teacher_class_inter = np.zeros(cfg.num_classes, dtype=np.int64)
+    teacher_class_union = np.zeros(cfg.num_classes, dtype=np.int64)
 
     seen_images = 0
     eval_image_res = ""  # will be set from first batch
@@ -793,11 +807,12 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             probs_samples: List[torch.Tensor] = []
             student.train()
             enable_dropout_only(student)
-            with torch.no_grad():
-                for _ in range(int(args.mc_dropout_passes)):
-                    mc_out = student(images)
-                    mc_logits = mc_out[0] if isinstance(mc_out, tuple) else mc_out
-                    probs_samples.append(F.softmax(mc_logits, dim=1))
+            with Timer(cfg.device) as t_mc:
+                with torch.no_grad():
+                    for _ in range(int(args.mc_dropout_passes)):
+                        mc_out = student(images)
+                        mc_logits = mc_out[0] if isinstance(mc_out, tuple) else mc_out
+                        probs_samples.append(F.softmax(mc_logits, dim=1))
             student.eval()
             probs_stack = torch.stack(probs_samples, dim=0)  # [T, B, C, H, W]
             probs_mean = probs_stack.mean(dim=0)
@@ -816,6 +831,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 else:
                     mc_entropies.append(float(pred_entropy[i][valid].mean().item()))
                     mc_mutual_infos.append(float(mutual_info[i][valid].mean().item()))
+            mc_latency_per_img = t_mc.ms / max(bsz, 1)
 
         student_probs = F.softmax(student_logits, dim=1)
         temp_probs = F.softmax(temp_logits, dim=1)
@@ -825,6 +841,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         for i in range(bsz):
             meta = metas[i]
             image_id = str(meta.get("image_id", f"img_{seen_images + i:06d}"))
+            image_path = str(meta.get("path", meta.get("file_name", meta.get("filename", ""))))
+            if not image_path and (seen_images + i) < len(_dataset_paths):
+                image_path = _dataset_paths[seen_images + i]
             valid = labels[i] != IGNORE_INDEX
             if int(valid.sum()) == 0:
                 continue
@@ -869,6 +888,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "student_ckpt": args.student_ckpt,
                 "train_method": args.train_method,
                 "image_id": image_id,
+                "image_path": image_path,
                 "student_miou": student_miou,
                 "student_risk": student_risk,
                 "student_pixel_acc": student_acc,
@@ -895,6 +915,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             if mc_entropies is not None and mc_mutual_infos is not None:
                 row["mc_entropy"] = float(mc_entropies[i])
                 row["mc_mutual_info"] = float(mc_mutual_infos[i])
+                row["mc_dropout_latency_ms"] = float(mc_latency_per_img)
 
             if guard_raw is not None:
                 if isinstance(guard_raw, dict):
@@ -920,6 +941,12 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 teacher_miou = image_miou(t_pred, gt, cfg.num_classes)
                 teacher_risk = 1.0 - teacher_miou
                 teacher_acc = image_pixel_acc(t_pred, gt)
+
+                # Accumulate teacher per-class stats
+                t_inter_union = per_class_inter_union(t_pred, gt, cfg.num_classes)
+                for cls_idx, (t_inter, t_union) in enumerate(t_inter_union):
+                    teacher_class_inter[cls_idx] += t_inter
+                    teacher_class_union[cls_idx] += t_union
 
                 # Teacher ROI and dynamic metrics
                 teacher_miou_near, _ = image_miou_roi(t_pred, gt, cfg.num_classes)
@@ -984,7 +1011,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     class_rows: List[Dict[str, Any]] = []
     for c in range(cfg.num_classes):
         iou = float(class_inter[c] / class_union[c]) if class_union[c] > 0 else np.nan
-        class_rows.append({
+        t_iou = float(teacher_class_inter[c] / teacher_class_union[c]) if teacher_class_union[c] > 0 else np.nan
+        row_cls: Dict[str, Any] = {
             "run_id": args.run_id,
             "dataset_name": args.dataset_name,
             "split": args.split,
@@ -998,7 +1026,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             "support_pixels": int(class_support[c]),
             "inter_pixels": int(class_inter[c]),
             "union_pixels": int(class_union[c]),
-        })
+            "teacher_iou": t_iou,
+            "teacher_inter_pixels": int(teacher_class_inter[c]),
+            "teacher_union_pixels": int(teacher_class_union[c]),
+        }
+        class_rows.append(row_cls)
 
     # -------------------------------------------------------------------------
     # Risk-coverage rows
@@ -1013,7 +1045,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if "guardrail_keep" in df_img.columns:
         score_keep_map["guardrail"] = df_img["guardrail_keep"].values
     if "oracle_keep" in df_img.columns:
-        score_keep_map["oracle"] = df_img["oracle_keep"].values
+        score_keep_map["teacher_oracle"] = df_img["oracle_keep"].values
+    # True selective-prediction oracle: rank by actual quality (ground truth at test time)
+    score_keep_map["oracle"] = df_img["student_miou"].values
 
     risk_cov_rows: List[Dict[str, Any]] = []
     student_risk_arr = df_img["student_risk"].values.astype(float)
@@ -1083,7 +1117,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             teacher_lat = df_img["teacher_latency_ms"].values.astype(float) if "teacher_latency_ms" in df_img else np.zeros(n)
 
             method_guard_cost = guard_lat if method == "guardrail" else np.zeros(n)
-            total_lat = student_lat + method_guard_cost + selected.astype(float) * teacher_lat
+            mc_lat = df_img["mc_dropout_latency_ms"].values.astype(float) if "mc_dropout_latency_ms" in df_img else np.zeros(n)
+            method_mc_cost = mc_lat if method == "mc_dropout" else np.zeros(n)
+            total_lat = student_lat + method_guard_cost + method_mc_cost + selected.astype(float) * teacher_lat
 
             budget_rows.append({
                 "run_id": args.run_id,
@@ -1242,6 +1278,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             run_row["teacher_risk_dynamic"] = float(df_img["teacher_risk_dynamic"].mean())
             run_row["teacher_benefit_dynamic"] = float(df_img["teacher_benefit_dynamic"].mean())
         run_row["oracle_aurc"] = float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "oracle"))
+        if any(r["method"] == "teacher_oracle" for r in risk_cov_rows):
+            run_row["teacher_oracle_aurc"] = float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "teacher_oracle"))
         run_row["disagreement_rate"] = float(df_img["disagreement_rate"].mean())
         run_row["confident_wrong_teacher_right"] = float(df_img["confident_wrong_teacher_right"].mean())
         for budget in [0.01, 0.05, 0.10, 0.20]:
@@ -1549,6 +1587,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--warmup-batches", type=int, default=5)
     p_eval.add_argument("--progress-every", type=int, default=50)
     p_eval.add_argument("--seed", type=int, default=42)
+    p_eval.add_argument("--seeds", default=None, help="Comma-separated seeds for multi-seed runs, e.g. 42,137,256. Overrides --seed.")
     p_eval.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p_eval.add_argument("--output-dir", default="paper_eval")
 
@@ -1564,7 +1603,17 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.mode == "eval":
-        evaluate_one_run(args)
+        if args.seeds:
+            seed_list = [int(s.strip()) for s in args.seeds.split(",")]
+            base_run_id = args.run_id
+            for seed in seed_list:
+                args.seed = seed
+                args.run_id = f"{base_run_id}_s{seed}"
+                print(f"\n{'='*60}\n[multi-seed] run_id={args.run_id}  seed={seed}\n{'='*60}")
+                evaluate_one_run(args)
+            args.run_id = base_run_id  # restore
+        else:
+            evaluate_one_run(args)
     elif args.mode == "plots":
         make_all_plots(args.output_dir)
     else:  # pragma: no cover
