@@ -205,3 +205,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+/src/analysis/cs_b0_b2_eval/figures/
