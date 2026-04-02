@@ -33,8 +33,17 @@ class Config:
     kd_temperature: float = 4.0       # softmax temperature for KD
 
     # ── Guardrail ──
-    guardrail_mode: str = "gap"       # gap | binary | both
+    guardrail_mode: str = "gap"       # gap | binary | both | utility | margin | guardrailpp
     guardrail_threshold: float = 0.5  # risk score threshold for flagging
+    utility_w0: float = 0.5
+    utility_w1: float = 0.25
+    utility_w2: float = 0.25
+    cf_delta: float = 0.05
+    cf_severities: tuple = field(default_factory=lambda: (0.0, 0.25, 0.5, 0.75, 1.0))
+    utility_loss_weight: float = 1.0
+    margin_loss_weight: float = 1.0
+    family_loss_weight: float = 0.0
+    margin_loss: str = "huber"
 
     # ── Data ──
     crop_size: int = 512

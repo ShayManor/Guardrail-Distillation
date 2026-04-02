@@ -209,3 +209,49 @@ def compute_guardrail_targets(student_logits, teacher_logits, gt, mode="gap"):
             targets["risk_label"] = binary.sum(dim=(1, 2)) / valid
 
     return targets
+
+
+class GuardrailPlusLoss(nn.Module):
+    """Loss for Guardrail++ utility / margin prediction."""
+
+    def __init__(
+        self,
+        utility_weight=1.0,
+        margin_weight=1.0,
+        family_weight=0.0,
+        margin_loss="huber",
+    ):
+        super().__init__()
+        self.utility_weight = utility_weight
+        self.margin_weight = margin_weight
+        self.family_weight = family_weight
+        self.margin_loss = margin_loss
+
+    def forward(self, preds, targets):
+        loss = 0.0
+        info = {}
+
+        if "utility_score" in preds and "utility_target" in targets:
+            l_utility = F.smooth_l1_loss(preds["utility_score"], targets["utility_target"])
+            loss = loss + self.utility_weight * l_utility
+            info["utility_loss"] = float(l_utility.item())
+
+        if "margin_vec" in preds and "margin_target" in targets:
+            if self.margin_loss == "mse":
+                l_margin = F.mse_loss(preds["margin_vec"], targets["margin_target"])
+            else:
+                l_margin = F.smooth_l1_loss(preds["margin_vec"], targets["margin_target"])
+            loss = loss + self.margin_weight * l_margin
+            info["margin_loss"] = float(l_margin.item())
+
+        if (
+            self.family_weight > 0.0
+            and "family_prob" in preds
+            and "family_target" in targets
+        ):
+            l_family = F.nll_loss((preds["family_prob"] + 1e-8).log(), targets["family_target"].long())
+            loss = loss + self.family_weight * l_family
+            info["family_loss"] = float(l_family.item())
+
+        info["loss"] = float(loss.item()) if torch.is_tensor(loss) else float(loss)
+        return loss, info
