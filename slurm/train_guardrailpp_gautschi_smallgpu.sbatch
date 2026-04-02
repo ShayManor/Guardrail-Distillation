@@ -1,42 +1,40 @@
-#!/bin/bash
-#SBATCH --job-name=guardrailpp-train
-#SBATCH --account=cis240206
-#SBATCH --partition=smallgpu
+#!/bin/bash -l
+#SBATCH --job-name=guardrailpp-eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=64
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH -A lilly-rob1
+#SBATCH -p smallgpu
+#SBATCH --gres=gpu:1
+#SBATCH -o /scratch/gautschi/manors/logs/guardrailpp-eval_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/guardrailpp-eval_%j.err
 
 set -euo pipefail
 
-cd /home/$USER/Guardrail-Distillation
-mkdir -p logs outputs-guardrailpp
+source /scratch/gautschi/manors/venvs/guardrail/bin/activate
 
-# Optional: load your site modules if needed
-# module purge
-# module load cuda/12.1
+export REPO_DIR=/scratch/gautschi/manors/Guardrail-Distillation
+export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
+unset DISPLAY
 
-source .venv/bin/activate
+mkdir -p /scratch/gautschi/manors/logs
+cd "$REPO_DIR"
 
-python -u src/train/run.py train \
-  --dataset-path /scratch/$USER/datasets/cityscapes \
-  --output-dir outputs-guardrailpp \
-  --student-model nvidia/mit-b0 \
-  --teacher-model nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
-  --guardrail-mode guardrailpp \
-  --epochs-sup 20 \
-  --epochs-kd 20 \
-  --epochs-skd 20 \
-  --epochs-guardrail 20 \
-  --batch-size 8 \
-  --lr 5e-5 \
-  --utility-w0 0.5 \
-  --utility-w1 0.25 \
-  --utility-w2 0.25 \
-  --cf-delta 0.05 \
-  --cf-severities 0.0,0.25,0.5,0.75,1.0 \
-  --log-every 20
+python -u src/eval/full_eval.py eval \
+  --run-id guardrailpp_cityscapes_val \
+  --dataset-name cityscapes \
+  --dataset-path /scratch/gautschi/manors/datasets/cityscapes \
+  --split val \
+  --domain all \
+  --student-name student_skd \
+  --train-method skd \
+  --student-backbone nvidia/mit-b0 \
+  --student-ckpt outputs-guardrailpp/student_skd.ckpt \
+  --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
+  --guardrail-ckpt outputs-guardrailpp/guardrail.ckpt \
+  --guardrail-student-name student_skd \
+  --mc-dropout-passes 8 \
+  --output-dir paper_eval \
+  --batch-size 4 \
+  --num-workers 4
