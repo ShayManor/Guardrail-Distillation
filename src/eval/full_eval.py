@@ -685,15 +685,19 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     if not checkpoint_path:
         return None
     try:
-        from src.train.models import GuardrailHead
+        from src.train.models import GuardrailHead, GuardrailPlusHead
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "Could not import GuardrailHead from your repo. "
             "Edit build_guardrail_model(...) in full_eval.py to match your repo."
         ) from exc
 
-    model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode="gap")
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
+    guard_mode = state.get("guardrail_mode", "gap") if isinstance(state, dict) else "gap"
+    if guard_mode in ("utility", "margin", "guardrailpp"):
+        model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=0, num_families=4)
+    else:
+        model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=guard_mode)
     model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
     return model.to(cfg.device).eval()
 
@@ -1045,6 +1049,19 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     if "risk_score" in guard_raw:
                         row["guardrail_risk"] = float(guard_raw["risk_score"][i].item())
                         row["guardrail_keep"] = 1.0 - row["guardrail_risk"]
+                    if "utility_score" in guard_raw:
+                        utility = float(guard_raw["utility_score"][i].item())
+                        utility = max(0.0, min(1.0, utility))
+                        row["guardrailpp_utility"] = utility
+                        row["guardrailpp_keep"] = 1.0 - utility
+                        # Alias to generic guardrail columns for existing plots/tables.
+                        row["guardrail_risk"] = utility
+                        row["guardrail_keep"] = 1.0 - utility
+                    if "margin_vec" in guard_raw:
+                        margin = guard_raw["margin_vec"][i]
+                        row["guardrailpp_margin_min"] = float(margin.min().item())
+                        for k in range(int(margin.shape[0])):
+                            row[f"guardrailpp_margin_{k}"] = float(margin[k].item())
                     elif "score" in guard_raw:
                         row["guardrail_risk"] = float(guard_raw["score"][i].item())
                         row["guardrail_keep"] = 1.0 - row["guardrail_risk"]
@@ -1167,6 +1184,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         score_keep_map["mc_dropout"] = -df_img["mc_entropy"].values
     if "guardrail_keep" in df_img.columns:
         score_keep_map["guardrail"] = df_img["guardrail_keep"].values
+    if "guardrailpp_keep" in df_img.columns:
+        score_keep_map["guardrailpp_keep"] = df_img["guardrailpp_keep"].values
     if "oracle_keep" in df_img.columns:
         score_keep_map["teacher_oracle"] = df_img["oracle_keep"].values
     # True selective-prediction oracle: rank by actual quality (ground truth at test time)
@@ -1205,6 +1224,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         teacher_budget_methods["mc_dropout"] = df_img["mc_entropy"].values
     if "guardrail_risk" in df_img.columns:
         teacher_budget_methods["guardrail"] = df_img["guardrail_risk"].values
+    if "guardrailpp_utility" in df_img.columns:
+        teacher_budget_methods["guardrailpp_utility"] = df_img["guardrailpp_utility"].values
     if "oracle_fail" in df_img.columns:
         teacher_budget_methods["oracle"] = df_img["oracle_fail"].values
     teacher_budget_methods["random"] = np.random.RandomState(args.seed).rand(len(df_img))
@@ -1239,7 +1260,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             guard_lat = df_img["guardrail_latency_ms"].values.astype(float) if "guardrail_latency_ms" in df_img else np.zeros(n)
             teacher_lat = df_img["teacher_latency_ms"].values.astype(float) if "teacher_latency_ms" in df_img else np.zeros(n)
 
-            method_guard_cost = guard_lat if method == "guardrail" else np.zeros(n)
+            method_guard_cost = guard_lat if method in ("guardrail", "guardrailpp_utility") else np.zeros(n)
             mc_lat = df_img["mc_dropout_latency_ms"].values.astype(float) if "mc_dropout_latency_ms" in df_img else np.zeros(n)
             method_mc_cost = mc_lat if method == "mc_dropout" else np.zeros(n)
             total_lat = student_lat + method_guard_cost + method_mc_cost + selected.astype(float) * teacher_lat

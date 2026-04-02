@@ -32,7 +32,20 @@ def parse_args():
     train_p.add_argument("--alpha-struct",     type=float, default=0.5)
     train_p.add_argument("--kd-temperature",   type=float, default=2.0)
     train_p.add_argument("--log-every",        type=int,   default=50)
-    train_p.add_argument("--guardrail-mode",   default="confidence")
+    train_p.add_argument(
+        "--guardrail-mode",
+        default="utility",
+        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp", "confidence"],
+    )
+    train_p.add_argument("--utility-w0",       type=float, default=0.5)
+    train_p.add_argument("--utility-w1",       type=float, default=0.25)
+    train_p.add_argument("--utility-w2",       type=float, default=0.25)
+    train_p.add_argument("--cf-delta",         type=float, default=0.05)
+    train_p.add_argument("--cf-severities",    default="0.0,0.25,0.5,0.75,1.0")
+    train_p.add_argument("--utility-loss-weight", type=float, default=1.0)
+    train_p.add_argument("--margin-loss-weight",  type=float, default=1.0)
+    train_p.add_argument("--family-loss-weight",  type=float, default=0.0)
+    train_p.add_argument("--margin-loss",      default="huber", choices=["huber", "mse"])
     train_p.add_argument("--mc-dropout-passes",type=int,   default=0)
     train_p.add_argument("--skip-sup",         action="store_true")
     train_p.add_argument("--skip-kd",          action="store_true")
@@ -41,7 +54,11 @@ def parse_args():
 
     # ── Eval mode ──────────────────────────────────────────────────────────────
     eval_p = subparsers.add_parser("eval", parents=[shared], help="Run eval from existing checkpoints")
-    eval_p.add_argument("--guardrail-mode",    default="confidence")
+    eval_p.add_argument(
+        "--guardrail-mode",
+        default="utility",
+        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp", "confidence"],
+    )
     eval_p.add_argument("--mc-dropout-passes", type=int, default=0)
     eval_p.add_argument(
         "--checkpoints",
@@ -56,6 +73,10 @@ def parse_args():
 
 def build_cfg(args):
     from config import Config
+    mode = getattr(args, "guardrail_mode", "utility")
+    if mode == "confidence":
+        mode = "utility"
+    cf_severities = tuple(float(x.strip()) for x in getattr(args, "cf_severities", "0.0,0.25,0.5,0.75,1.0").split(",") if x.strip())
     return Config(
         dataset_path=args.dataset_path,
         num_classes=args.num_classes,
@@ -73,7 +94,16 @@ def build_cfg(args):
         num_workers=args.num_workers,
         output_dir=args.output_dir,
         device=args.device,
-        guardrail_mode=getattr(args, "guardrail_mode", "confidence"),
+        guardrail_mode=mode,
+        utility_w0=getattr(args, "utility_w0", 0.5),
+        utility_w1=getattr(args, "utility_w1", 0.25),
+        utility_w2=getattr(args, "utility_w2", 0.25),
+        cf_delta=getattr(args, "cf_delta", 0.05),
+        cf_severities=cf_severities,
+        utility_loss_weight=getattr(args, "utility_loss_weight", 1.0),
+        margin_loss_weight=getattr(args, "margin_loss_weight", 1.0),
+        family_loss_weight=getattr(args, "family_loss_weight", 0.0),
+        margin_loss=getattr(args, "margin_loss", "huber"),
     )
 
 
@@ -107,7 +137,7 @@ def default_checkpoints(output_dir):
 
 
 def run_eval_pipeline(args, cfg, checkpoint_map):
-    from models import GuardrailHead
+    from models import GuardrailHead, GuardrailPlusHead
     from utils import load_checkpoint
     from src.eval.eval import run_eval
     from src.eval.data import CITYSCAPES_LABELID_TO_TRAINID
@@ -161,7 +191,10 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
 
     guardrail_ckpt = checkpoint_map.get("guardrail", "")
     if os.path.exists(guardrail_ckpt):
-        guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
+        if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
+            guardrail_head = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=0, num_families=4)
+        else:
+            guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
         guard_state = torch.load(guardrail_ckpt, map_location=cfg.device, weights_only=False)
         guardrail_head.load_state_dict(guard_state["model"])
 
@@ -181,7 +214,7 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
 
 
 def run_train_pipeline(args, cfg):
-    from models import GuardrailHead
+    from models import GuardrailHead, GuardrailPlusHead
     from utils import load_checkpoint
     from data import build_dataloaders
     from train_supervised import train_supervised
@@ -217,7 +250,10 @@ def run_train_pipeline(args, cfg):
         best_student = fresh()
         load_checkpoint(best_student, ckpts["student_skd"], device=cfg.device)
         best_student.to(cfg.device).eval()
-        guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
+        if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
+            guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=0, num_families=4)
+        else:
+            guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
         train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg)
         ckpts["guardrail"] = os.path.join(cfg.output_dir, "guardrail.ckpt")
 

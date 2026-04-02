@@ -122,6 +122,8 @@ class GuardrailHead(nn.Module):
             mode: 'gap' | 'binary' | 'both'
         """
         super().__init__()
+        if mode == "confidence":
+            mode = "gap"
         self.mode = mode
         in_ch = num_classes + feat_channels
 
@@ -170,4 +172,60 @@ class GuardrailHead(nn.Module):
         if hasattr(self, "binary_head"):
             out["binary_heatmap"] = torch.sigmoid(self.binary_head(enc).squeeze(1))
 
+        return out
+
+
+class GuardrailPlusHead(nn.Module):
+    """
+    Guardrail++ head for utility / counterfactual margin prediction.
+
+    Outputs:
+        - utility_score: image-level fallback utility in [0, 1]
+        - margin_vec: per-family intervention margin in [0, 1]
+        - family_prob (optional): corruption family distribution
+    """
+
+    def __init__(
+        self,
+        num_classes=19,
+        feat_channels=0,
+        num_families=4,
+        predict_family_prob=True,
+    ):
+        super().__init__()
+        in_ch = num_classes + feat_channels
+        self.num_families = num_families
+        self.predict_family_prob = predict_family_prob
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
+        )
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.utility_head = nn.Linear(32, 1)
+        self.margin_head = nn.Linear(32, num_families)
+        if self.predict_family_prob:
+            self.family_head = nn.Linear(32, num_families)
+
+    def forward(self, student_logits, student_features=None):
+        x = student_logits.detach()
+        if student_features is not None:
+            feat = F.interpolate(
+                student_features.detach(),
+                size=x.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+            x = torch.cat([x, feat], dim=1)
+
+        enc = self.encoder(x)
+        pooled = self.pool(enc).flatten(1)
+
+        out = {
+            "utility_score": torch.sigmoid(self.utility_head(pooled)).squeeze(1),
+            "margin_vec": torch.sigmoid(self.margin_head(pooled)),
+        }
+        if self.predict_family_prob:
+            out["family_prob"] = torch.softmax(self.family_head(pooled), dim=1)
         return out
