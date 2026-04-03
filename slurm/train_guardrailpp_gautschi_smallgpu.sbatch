@@ -32,8 +32,8 @@ HF_HOME=/scratch/gautschi/manors/hf_cache \
   python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir outputs-guardrailpp \
-  --student-model MIT_B0 \
-  --teacher-model TEACHER \
+--student-model "$MIT_B0" \
+--teacher-model "$TEACHER" \
   --guardrail-mode guardrailpp \
   --epochs-sup 20 \
   --epochs-kd 20 \
