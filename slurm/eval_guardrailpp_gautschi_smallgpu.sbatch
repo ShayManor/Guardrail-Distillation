@@ -14,15 +14,19 @@ set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
 
-export REPO_DIR=/scratch/gautschi/manors/Guardrail-Distillation
+export HF_HOME=$SCRATCH/hf_cache
+export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
+export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
+
+export REPO_DIR=/home/manors/Guardrail-Distillation
 export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 unset DISPLAY
 
-mkdir -p /scratch/gautschi/manors/logs
+mkdir -p /scratch/gautschi/manors/guardrail/logs
 cd "$REPO_DIR"
 
 python -u src/train/run.py train \
-  --dataset-path /scratch/gautschi/manors/datasets/cityscapes \
+  --dataset-path /home/manors/Guardrail-Distillation/data/cityscapes \
   --output-dir outputs-guardrailpp \
   --student-model nvidia/mit-b0 \
   --teacher-model nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
