@@ -18,12 +18,12 @@ export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
 
-export REPO_DIR=/home/manors/Guardrail-Distillation
-export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
+export REPO=/home/manors/Guardrail-Distillation
+export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 
 mkdir -p /scratch/gautschi/manors/guardrail/logs
-cd "$REPO_DIR"
+cd "$REPO"
 
 MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
