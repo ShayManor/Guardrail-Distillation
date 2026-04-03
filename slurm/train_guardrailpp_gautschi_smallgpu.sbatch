@@ -27,22 +27,25 @@ cd "$REPO_DIR"
 
 MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+STUDENT_CKPT=$(find "$REPO" /scratch/gautschi/manors -name student_skd.ckpt 2>/dev/null | head -n1)
+GUARDRAIL_CKPT=$(find "$REPO" /scratch/gautschi/manors -name guardrail.ckpt 2>/dev/null | head -n1)
 
 
+HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/eval/full_eval.py eval \
   --run-id guardrailpp_cityscapes_val \
   --dataset-name cityscapes \
-  --dataset-path /home/manors/Guardrail-Distillation/data/cityscapes \
+  --dataset-path "$REPO/data/cityscapes" \
   --split val \
   --domain all \
   --student-name student_skd \
   --train-method skd \
   --student-backbone "$MIT_B0" \
-  --student-ckpt outputs-guardrailpp/student_skd.ckpt \
+  --student-ckpt "$STUDENT_CKPT" \
   --teacher-backbone "$TEACHER" \
-  --guardrail-ckpt outputs-guardrailpp/guardrail.ckpt \
+  --guardrail-ckpt "$GUARDRAIL_CKPT" \
   --guardrail-student-name student_skd \
   --mc-dropout-passes 8 \
-  --output-dir paper_eval \
+  --output-dir "$REPO/paper_eval" \
   --batch-size 4 \
   --num-workers 4
