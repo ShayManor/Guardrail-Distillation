@@ -32,20 +32,21 @@ GUARDRAIL_CKPT=$(find "$REPO" /scratch/gautschi/manors -name guardrail.ckpt 2>/d
 
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
-python -u src/eval/full_eval.py eval \
-  --run-id guardrailpp_cityscapes_val \
-  --dataset-name cityscapes \
+  python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
-  --split val \
-  --domain all \
-  --student-name student_skd \
-  --train-method skd \
-  --student-backbone "$MIT_B0" \
-  --student-ckpt "$STUDENT_CKPT" \
-  --teacher-backbone "$TEACHER" \
-  --guardrail-ckpt "$GUARDRAIL_CKPT" \
-  --guardrail-student-name student_skd \
-  --mc-dropout-passes 8 \
-  --output-dir "$REPO/paper_eval" \
-  --batch-size 4 \
-  --num-workers 4
+  --output-dir outputs-guardrailpp \
+  --student-model nvidia/mit-b0 \
+  --teacher-model nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
+  --guardrail-mode guardrailpp \
+  --epochs-sup 20 \
+  --epochs-kd 20 \
+  --epochs-skd 20 \
+  --epochs-guardrail 20 \
+  --batch-size 8 \
+  --lr 5e-5 \
+  --utility-w0 0.5 \
+  --utility-w1 0.25 \
+  --utility-w2 0.25 \
+  --cf-delta 0.05 \
+  --cf-severities 0.0,0.25,0.5,0.75,1.0 \
+  --log-every 20

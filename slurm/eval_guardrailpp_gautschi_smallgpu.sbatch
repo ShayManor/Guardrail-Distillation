@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=guardrailpp-train
+#SBATCH --job-name=guardrailpp-eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -7,8 +7,8 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/guardrailpp-train_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/guardrailpp-train_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/guardrailpp-eval_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/guardrailpp-eval_%j.err
 
 set -euo pipefail
 
@@ -18,28 +18,34 @@ export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
 
-export REPO_DIR=/home/manors/Guardrail-Distillation
-export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
+export REPO=/home/manors/Guardrail-Distillation
+export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 
 mkdir -p /scratch/gautschi/manors/guardrail/logs
-cd "$REPO_DIR"
+cd "$REPO"
 
-python -u src/train/run.py train \
-  --dataset-path /home/manors/Guardrail-Distillation/data/acdc \
-  --output-dir outputs-guardrailpp \
-  --student-model nvidia/mit-b0 \
-  --teacher-model nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
-  --guardrail-mode guardrailpp \
-  --epochs-sup 20 \
-  --epochs-kd 20 \
-  --epochs-skd 20 \
-  --epochs-guardrail 20 \
-  --batch-size 8 \
-  --lr 5e-5 \
-  --utility-w0 0.5 \
-  --utility-w1 0.25 \
-  --utility-w2 0.25 \
-  --cf-delta 0.05 \
-  --cf-severities 0.0,0.25,0.5,0.75,1.0 \
-  --log-every 20
+MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
+TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+STUDENT_CKPT=$(find "$REPO" /scratch/gautschi/manors -name student_skd.ckpt 2>/dev/null | head -n1)
+GUARDRAIL_CKPT=$(find "$REPO" /scratch/gautschi/manors -name guardrail.ckpt 2>/dev/null | head -n1)
+
+
+HF_HOME=/scratch/gautschi/manors/hf_cache \
+python -u src/eval/full_eval.py eval \
+  --run-id guardrailpp_cityscapes_val \
+  --dataset-name cityscapes \
+  --dataset-path "$REPO/data/cityscapes" \
+  --split val \
+  --domain all \
+  --student-name student_skd \
+  --train-method skd \
+  --student-backbone "$MIT_B0" \
+  --student-ckpt "$STUDENT_CKPT" \
+  --teacher-backbone "$TEACHER" \
+  --guardrail-ckpt "$GUARDRAIL_CKPT" \
+  --guardrail-student-name student_skd \
+  --mc-dropout-passes 8 \
+  --output-dir "$REPO/paper_eval" \
+  --batch-size 4 \
+  --num-workers 4
