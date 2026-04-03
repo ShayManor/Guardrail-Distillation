@@ -25,6 +25,10 @@ unset DISPLAY
 mkdir -p /scratch/gautschi/manors/guardrail/logs
 cd "$REPO_DIR"
 
+MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
+TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+
+
 python -u src/eval/full_eval.py eval \
   --run-id guardrailpp_cityscapes_val \
   --dataset-name cityscapes \
@@ -33,9 +37,9 @@ python -u src/eval/full_eval.py eval \
   --domain all \
   --student-name student_skd \
   --train-method skd \
-  --student-backbone nvidia/mit-b0 \
+  --student-backbone "$MIT_B0" \
   --student-ckpt outputs-guardrailpp/student_skd.ckpt \
-  --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
+  --teacher-backbone "$TEACHER" \
   --guardrail-ckpt outputs-guardrailpp/guardrail.ckpt \
   --guardrail-student-name student_skd \
   --mc-dropout-passes 8 \

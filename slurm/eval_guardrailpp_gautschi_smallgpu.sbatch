@@ -26,7 +26,7 @@ mkdir -p /scratch/gautschi/manors/guardrail/logs
 cd "$REPO_DIR"
 
 python -u src/train/run.py train \
-  --dataset-path /home/manors/Guardrail-Distillation/data/cityscapes \
+  --dataset-path /home/manors/Guardrail-Distillation/data/acdc \
   --output-dir outputs-guardrailpp \
   --student-model nvidia/mit-b0 \
   --teacher-model nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
