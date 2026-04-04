@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union, List
 
 import numpy as np
 import torch
@@ -104,7 +104,7 @@ def get_worst_k(csv_path: str, k_percent: float = 5.0, sort_by: str = "miou", as
     return worst
 
 
-def plot_results(csv_path: str | list[str], save_dir: Optional[str] = None, show: bool = False):
+def plot_results(csv_path: Union[str, List[str]], save_dir: Optional[str] = None, show: bool = False):
     """
     6-panel analysis from eval CSVs: mIoU dist, confidence vs mIoU, per-class IoU,
     entropy vs mIoU, risk-coverage (AURC), latency. Writes summary.csv.
