@@ -67,8 +67,9 @@ class CityscapesDataset(Dataset):
                 lbl = TF.hflip(lbl)
         else:
             # Resize for val
-            img = TF.resize(img, (self.crop_size, self.crop_size), interpolation=TF.InterpolationMode.BILINEAR)
-            lbl = TF.resize(lbl, (self.crop_size, self.crop_size), interpolation=TF.InterpolationMode.NEAREST)
+            val_size = (self.crop_size, self.crop_size * 2)  # preserve 1:2 aspect ratio
+            img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
+            lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
 
         img = TF.to_tensor(img)
         img = self.normalize(img)
@@ -99,8 +100,9 @@ class HFSegmentationDataset(Dataset):
         img = sample[self.image_key].convert("RGB")
         lbl = sample[self.label_key]
 
-        img = TF.resize(img, (self.crop_size, self.crop_size), interpolation=TF.InterpolationMode.BILINEAR)
-        lbl = TF.resize(lbl, (self.crop_size, self.crop_size), interpolation=TF.InterpolationMode.NEAREST)
+        val_size = (self.crop_size, self.crop_size * 2)  # preserve 1:2 aspect ratio
+        img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
+        lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
 
         if self.split == "train" and torch.rand(1) > 0.5:
             img = TF.hflip(img)

@@ -40,7 +40,7 @@ HF_HOME=/scratch/gautschi/manors/hf_cache \
   --epochs-skd 20 \
   --epochs-guardrail 20 \
   --batch-size 8 \
-  --lr 5e-5 \
+  --lr 1e-4 \
   --utility-w0 0.5 \
   --utility-w1 0.25 \
   --utility-w2 0.25 \
