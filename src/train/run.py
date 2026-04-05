@@ -35,7 +35,7 @@ def parse_args():
     train_p.add_argument(
         "--guardrail-mode",
         default="utility",
-        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp", "confidence"],
+        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp"],
     )
     train_p.add_argument("--utility-w0",       type=float, default=0.5)
     train_p.add_argument("--utility-w1",       type=float, default=0.25)
@@ -57,7 +57,7 @@ def parse_args():
     eval_p.add_argument(
         "--guardrail-mode",
         default="utility",
-        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp", "confidence"],
+        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp"],
     )
     eval_p.add_argument("--mc-dropout-passes", type=int, default=0)
     eval_p.add_argument(
@@ -74,8 +74,6 @@ def parse_args():
 def build_cfg(args):
     from config import Config
     mode = getattr(args, "guardrail_mode", "utility")
-    if mode == "confidence":
-        mode = "utility"
     cf_severities = tuple(float(x.strip()) for x in getattr(args, "cf_severities", "0.0,0.25,0.5,0.75,1.0").split(",") if x.strip())
     return Config(
         dataset_path=args.dataset_path,

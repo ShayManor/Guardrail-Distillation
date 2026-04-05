@@ -297,7 +297,16 @@ def extract_image_scores(model, dataloader, num_classes, device,
                 rec["mc_entropy"] = mc_entropy[i]
 
             if guard_out is not None:
-                rec["guardrail_risk"] = guard_out["risk_score"][i].item()
+                if "risk_score" in guard_out:
+                    rec["guardrail_risk"] = guard_out["risk_score"][i].item()
+                if "utility_score" in guard_out:
+                    rec["guardrail_risk"] = guard_out["utility_score"][i].item()
+                    rec["guardrailpp_utility"] = guard_out["utility_score"][i].item()
+                if "margin_vec" in guard_out:
+                    margin = guard_out["margin_vec"][i]
+                    rec["margin_vec_min"] = float(margin.min().item())
+                    for k in range(margin.shape[0]):
+                        rec[f"margin_{k}"] = float(margin[k].item())
                 if "gap_heatmap" in guard_out:
                     hm = guard_out["gap_heatmap"][i]
                     valid_hm = hm[valid] if hm.shape == lbl.shape else hm.flatten()
@@ -400,6 +409,8 @@ def run_benchmark(
             methods["MC-Dropout"] = -np.array([r["mc_entropy"] for r in records])
         if "guardrail_risk" in records[0]:
             methods["Guardrail"] = 1.0 - np.array([r["guardrail_risk"] for r in records])
+        if "guardrailpp_utility" in records[0]:
+            methods["Guardrail++"] = 1.0 - np.array([r["guardrailpp_utility"] for r in records])
         if "oracle_gap" in records[0]:
             methods["Oracle"] = 1.0 - np.array([r["oracle_gap"] for r in records])
 
@@ -544,6 +555,8 @@ def _plot_benchmark(all_results, all_summary, save_path):
                     "Neg-Entropy": -np.array([r["entropy"] for r in records])}
         if "guardrail_risk" in records[0]:
             methods["Guardrail"] = 1.0 - np.array([r["guardrail_risk"] for r in records])
+        if "guardrailpp_utility" in records[0]:
+            methods["Guardrail++"] = 1.0 - np.array([r["guardrailpp_utility"] for r in records])
         if "oracle_gap" in records[0]:
             methods["Oracle"] = 1.0 - np.array([r["oracle_gap"] for r in records])
         if "mc_entropy" in records[0]:

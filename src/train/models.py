@@ -122,8 +122,6 @@ class GuardrailHead(nn.Module):
             mode: 'gap' | 'binary' | 'both'
         """
         super().__init__()
-        if mode == "confidence":
-            mode = "gap"
         self.mode = mode
         in_ch = num_classes + feat_channels
 

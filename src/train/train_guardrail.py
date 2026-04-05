@@ -11,35 +11,101 @@ DYNAMIC_CLASS_IDS = [11, 12, 13, 14, 15, 17, 18]
 
 
 def _apply_corruption(imgs, family, severity):
-    """Differentiation-free corruption operator for counterfactual target construction."""
+    """ImageNet-C / Cityscapes-C aligned corruption families for driving.
+
+    Families map to physically motivated driving hazards:
+      underexposure -> brightness (INet-C #10)
+      motion_blur   -> motion_blur (INet-C #6)
+      noise         -> gaussian_noise + shot_noise (INet-C #1-2)
+      fog           -> fog (INet-C #9)
+    """
     severity = float(max(0.0, min(1.0, severity)))
+    if severity == 0.0:
+        return imgs
     x = imgs
 
     if family == "underexposure":
-        # Darken image in normalized space.
-        factor = 1.0 - 0.7 * severity
+        # Matches ImageNet-C brightness: multiply by factor in [0.05, 0.95]
+        # severity 0->1 maps to factor 0.95->0.05
+        factor = 1.0 - 0.95 * severity
         return x * factor
 
     if family == "motion_blur":
-        # Approximate blur using average pooling then blend.
-        k = 3 + int(round(6 * severity))
-        k = k + 1 if k % 2 == 0 else k
-        blurred = F.avg_pool2d(x, kernel_size=k, stride=1, padding=k // 2)
-        return (1.0 - severity) * x + severity * blurred
+        # Directional blur approximation (horizontal, driving-relevant)
+        # Kernel size scales with severity: 3->15
+        k = 3 + int(round(12 * severity))
+        k = k if k % 2 == 1 else k + 1
+        # Horizontal 1D blur (motion along driving direction)
+        kernel = torch.zeros(1, 1, 1, k, device=x.device)
+        kernel[..., :] = 1.0 / k
+        B, C, H, W = x.shape
+        x_pad = F.pad(x.reshape(B * C, 1, H, W), (k // 2, k // 2, 0, 0), mode='reflect')
+        blurred = F.conv2d(x_pad, kernel).reshape(B, C, H, W)
+        return blurred
 
     if family == "noise":
-        sigma = 0.05 + 0.25 * severity
-        noise = torch.randn_like(x) * sigma
-        return x + noise
+        # Gaussian + shot noise blend (INet-C #1-2 aligned)
+        sigma = 0.02 + 0.28 * severity  # range [0.02, 0.30]
+        gaussian = torch.randn_like(x) * sigma
+        # Shot noise component: Poisson-like via sqrt scaling
+        shot_scale = 0.5 * severity
+        shot = torch.randn_like(x) * (x.abs().sqrt() * shot_scale)
+        return x + gaussian + shot
 
     if family == "fog":
-        # Low-contrast haze blend.
-        fog_level = 0.15 + 0.55 * severity
-        gray = x.mean(dim=1, keepdim=True)
-        return (1.0 - fog_level) * x + fog_level * gray
+        # INet-C fog: diamond-shaped fog density + atmospheric scattering
+        B, C, H, W = x.shape
+        fog_density = 0.1 + 0.7 * severity
+        # Depth-dependent: thicker at top (far), thinner at bottom (near)
+        depth = torch.linspace(1.0, 0.2, H, device=x.device).view(1, 1, H, 1).expand(B, 1, H, W)
+        transmission = torch.exp(-fog_density * depth * 3.0)
+        airlight = 0.8  # atmospheric light (gray)
+        return x * transmission + airlight * (1.0 - transmission)
 
     return x
 
+
+MARGIN_FAMILY_NAMES = ["underexposure", "motion_blur", "noise", "fog"]
+
+
+def apply_adaptive_preprocessing(imgs, margin_vec, threshold=0.5):
+    """Apply corrective preprocessing based on predicted vulnerability margins.
+
+    Low margin for a family => apply the inverse correction for that family.
+    Returns preprocessed images (no grad needed, runs at inference).
+    """
+    x = imgs.clone()
+    # margin_vec: (B, num_families) in [0,1], low = vulnerable
+    for k, family in enumerate(MARGIN_FAMILY_NAMES):
+        vulnerable = margin_vec[:, k] < threshold  # (B,)
+        if not vulnerable.any():
+            continue
+        strength = (threshold - margin_vec[:, k]).clamp(0, 1)  # higher = more correction
+
+        if family == "underexposure":
+            # Brighten: gamma correction approx
+            factor = 1.0 + 0.5 * strength  # up to 1.5x
+            x[vulnerable] = x[vulnerable] * factor[vulnerable, None, None, None]
+
+        elif family == "motion_blur":
+            # Sharpen via unsharp mask
+            blurred = F.avg_pool2d(x[vulnerable], kernel_size=3, stride=1, padding=1)
+            alpha = 0.3 * strength[vulnerable, None, None, None]
+            x[vulnerable] = x[vulnerable] + alpha * (x[vulnerable] - blurred)
+
+        elif family == "noise":
+            # Denoise via light smoothing
+            sigma = 0.5 * strength[vulnerable, None, None, None]
+            smoothed = F.avg_pool2d(x[vulnerable], kernel_size=3, stride=1, padding=1)
+            x[vulnerable] = (1 - sigma) * x[vulnerable] + sigma * smoothed
+
+        elif family == "fog":
+            # Dehaze: boost contrast
+            factor = 1.0 + 0.4 * strength[vulnerable, None, None, None]
+            mean = x[vulnerable].mean(dim=(2, 3), keepdim=True)
+            x[vulnerable] = mean + factor * (x[vulnerable] - mean)
+
+    return x.clamp(-3, 3)  # stay within normalized range
 
 def _valid_mean(v, valid_mask):
     denom = valid_mask.float().sum(dim=(1, 2)).clamp(min=1.0)
@@ -224,8 +290,52 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
             print(f"  → Saved guardrail: {best_path}")
 
     print(f"  [Guard] Best val loss={best_loss:.4f}")
+    if cfg.guardrail_mode in plus_modes:
+        from utils import load_checkpoint as _lc
+        best_state = torch.load(best_path, map_location=device, weights_only=False)
+        guardrail.load_state_dict(best_state["model"])
+        calib_path = calibrate_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_features)
+
     return best_path
 
+def calibrate_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_features=False):
+    """Post-hoc isotonic calibration of utility scores against true teacher benefit."""
+    from sklearn.isotonic import IsotonicRegression
+    import pickle
+
+    device = cfg.device
+    guardrail.eval(); student.eval(); teacher.eval()
+
+    pred_utils, true_utils = [], []
+    with torch.no_grad():
+        for imgs, lbls in val_loader:
+            imgs, lbls = imgs.to(device), lbls.to(device)
+            student_logits = student(imgs)
+            student_feat = None
+            if use_student_features:
+                student_logits, student_feat = student(imgs, return_features=True)
+            teacher_logits = teacher(imgs)
+
+            preds = guardrail(student_logits, student_feat)
+            true_benefit = _teacher_benefit_weighted(
+                student_logits, teacher_logits, lbls,
+                weights=(cfg.utility_w0, cfg.utility_w1, cfg.utility_w2),
+            ).clamp(0.0, 1.0)
+
+            pred_utils.append(preds["utility_score"].cpu())
+            true_utils.append(true_benefit.cpu())
+
+    pred_arr = torch.cat(pred_utils).numpy()
+    true_arr = torch.cat(true_utils).numpy()
+
+    iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    iso.fit(pred_arr, true_arr)
+
+    calib_path = f"{cfg.output_dir}/guardrail_calibrator.pkl"
+    with open(calib_path, "wb") as f:
+        pickle.dump(iso, f)
+    print(f"  [Calibration] Saved isotonic calibrator: {calib_path}")
+    return calib_path
 
 @torch.no_grad()
 def _eval_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_features):

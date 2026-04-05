@@ -890,11 +890,18 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             eval_image_res = f"{images.shape[2]}x{images.shape[3]}"
 
         # Student forward
+        images_input = images
+        preproc_ms_img = 0.0
+        if guardrail is not None and args.guardrail_student_name == args.student_name and hasattr(args,
+                                                                                                  '_prev_margin_vec'):
+            # Use margin from previous batch as proxy (or run guardrail first)
+            pass  # handled below after guardrail forward
+
         with Timer(cfg.device) as t_student:
             try:
-                out = student(images, return_features=True)
+                out = student(images_input, return_features=True)
             except TypeError:
-                out = student(images)
+                out = student(images_input)
         if isinstance(out, tuple):
             student_logits = out[0]
             student_feat = out[1] if len(out) > 1 else None
@@ -918,6 +925,18 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         # Guardrail forward
         guard_raw = None
         guard_ms_img = 0.0
+        # ── Adaptive preprocessing pass (uses margin_vec to preprocess, re-run student) ──
+        adapt_logits = None
+        if guard_raw is not None and isinstance(guard_raw, dict) and "margin_vec" in guard_raw:
+            from src.train.train_guardrail import apply_adaptive_preprocessing
+            margin_v = guard_raw["margin_vec"]
+            needs_preproc = (margin_v.min(dim=1).values < 0.5)
+            if needs_preproc.any():
+                with Timer(cfg.device) as t_adapt:
+                    images_adapted = apply_adaptive_preprocessing(images, margin_v, threshold=0.5)
+                    adapt_out = student(images_adapted)
+                    adapt_logits = adapt_out[0] if isinstance(adapt_out, tuple) else adapt_out
+                adapt_ms_img = t_adapt.ms / max(bsz, 1)
         if guardrail is not None and args.guardrail_student_name == args.student_name:
             with Timer(cfg.device) as t_guard:
                 try:
@@ -1043,6 +1062,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 row["mc_entropy"] = float(mc_entropies[i])
                 row["mc_mutual_info"] = float(mc_mutual_infos[i])
                 row["mc_dropout_latency_ms"] = float(mc_latency_per_img)
+
+            if adapt_logits is not None and needs_preproc[i]:
+                adapt_pred = adapt_logits[i].argmax(dim=0)
+                adapt_miou = image_miou(adapt_pred, gt, cfg.num_classes)
+                row["adapted_miou"] = adapt_miou
+                row["adapted_risk"] = 1.0 - adapt_miou
+                row["adaptation_gain"] = adapt_miou - student_miou
 
             if guard_raw is not None:
                 if isinstance(guard_raw, dict):
@@ -1229,6 +1255,16 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if "oracle_fail" in df_img.columns:
         teacher_budget_methods["oracle"] = df_img["oracle_fail"].values
     teacher_budget_methods["random"] = np.random.RandomState(args.seed).rand(len(df_img))
+
+    # If calibrated utility available, add λ-sweep method
+    calib_path = Path(args.output_dir) / "guardrail_calibrator.pkl"
+    if "guardrailpp_utility" in df_img.columns and calib_path.exists():
+        import pickle
+        with open(calib_path, "rb") as f:
+            iso = pickle.load(f)
+        calibrated_utility = iso.predict(df_img["guardrailpp_utility"].values.astype(float))
+        df_img["calibrated_utility"] = calibrated_utility
+        teacher_budget_methods["guardrailpp_calibrated"] = calibrated_utility
 
     teacher_available = "teacher_risk" in df_img.columns
     total_teacher_benefit = float(df_img["teacher_benefit"].sum()) if teacher_available else 0.0
