@@ -47,5 +47,5 @@ python -u src/eval/full_eval.py eval \
   --guardrail-student-name student_skd \
   --mc-dropout-passes 8 \
   --output-dir "$REPO/paper_eval" \
-  --batch-size 4 \
+  --batch-size 2 \
   --num-workers 4
