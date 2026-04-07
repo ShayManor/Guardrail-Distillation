@@ -860,8 +860,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     logits, feat = out
                 else:
                     logits, feat = out, None
+                feat = None
+                if isinstance(out, tuple) and len(out) > 1:
+                    feat = out[1]
                 try:
-                    _ = guardrail(logits, None)
+                    _ = guardrail(logits, feat)
                 except TypeError:
                     _ = guardrail(logits)
 
@@ -944,7 +947,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         if guardrail is not None and args.guardrail_student_name == args.student_name:
             with Timer(cfg.device) as t_guard:
                 try:
-                    guard_raw = guardrail(student_logits, None)
+                    guard_raw = guardrail(student_logits, student_feat)
                 except TypeError:
                     guard_raw = guardrail(student_logits)
             guard_ms_img = t_guard.ms / max(bsz, 1)
