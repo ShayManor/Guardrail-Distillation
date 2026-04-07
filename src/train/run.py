@@ -189,11 +189,15 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
 
     guardrail_ckpt = checkpoint_map.get("guardrail", "")
     if os.path.exists(guardrail_ckpt):
-        if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
-            guardrail_head = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=0, num_families=4)
-        else:
-            guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
         guard_state = torch.load(guardrail_ckpt, map_location=cfg.device, weights_only=False)
+        # Infer feat_channels from saved encoder weight shape
+        enc_weight = guard_state["model"]["encoder.0.weight"]
+        feat_ch = enc_weight.shape[1] - cfg.num_classes  # total_in - logit_channels
+        print(f"[Eval] Guardrail feat_channels={feat_ch} (from checkpoint)")
+        if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
+            guardrail_head = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
+        else:
+            guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=cfg.guardrail_mode)
         guardrail_head.load_state_dict(guard_state["model"])
 
         run_benchmark(

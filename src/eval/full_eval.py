@@ -694,10 +694,14 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
 
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
     guard_mode = state.get("guardrail_mode", "gap") if isinstance(state, dict) else "gap"
+    enc_weight = state["model"]["encoder.0.weight"] if isinstance(state, dict) and "model" in state else state[
+        "encoder.0.weight"]
+    feat_ch = enc_weight.shape[1] - cfg.num_classes
+    print(f"[guardrail] Inferred feat_channels={feat_ch} from checkpoint")
     if guard_mode in ("utility", "margin", "guardrailpp"):
-        model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=0, num_families=4)
+        model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
     else:
-        model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=guard_mode)
+        model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=guard_mode)
     model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
     return model.to(cfg.device).eval()
 
