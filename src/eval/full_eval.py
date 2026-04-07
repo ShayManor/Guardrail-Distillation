@@ -855,7 +855,10 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             if teacher is not None:
                 _ = teacher(images)
             if guardrail is not None:
-                out = student(images)
+                try:
+                    out = student(images, return_features=True)
+                except TypeError:
+                    out = student(images)
                 if isinstance(out, tuple):
                     logits, feat = out
                 else:
