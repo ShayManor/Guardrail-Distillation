@@ -226,6 +226,7 @@ class GuardrailPlusLoss(nn.Module):
         self.margin_weight = margin_weight
         self.family_weight = family_weight
         self.margin_loss = margin_loss
+        self.gap_weight = 1.0
 
     def forward(self, preds, targets):
         loss = 0.0
@@ -252,6 +253,11 @@ class GuardrailPlusLoss(nn.Module):
             l_family = F.nll_loss((preds["family_prob"] + 1e-8).log(), targets["family_target"].long())
             loss = loss + self.family_weight * l_family
             info["family_loss"] = float(l_family.item())
+
+        if "gap_heatmap" in preds and "gap_map" in targets:
+            l_gap = F.smooth_l1_loss(preds["gap_heatmap"], targets["gap_map"])
+            loss = loss + self.gap_weight * l_gap
+            info["gap_loss"] = float(l_gap.item())
 
         info["loss"] = float(loss.item()) if torch.is_tensor(loss) else float(loss)
         return loss, info

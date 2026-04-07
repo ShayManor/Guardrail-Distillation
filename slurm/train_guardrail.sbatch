@@ -43,20 +43,22 @@ python -u src/train/run.py train \
   --student-model "$MIT_B0" \
   --teacher-model "$TEACHER" \
   --guardrail-mode guardrailpp \
-  --epochs-sup 1 \
-  --epochs-kd 1 \
-  --epochs-skd 1 \
-  --epochs-guardrail 40 \
+  --skip-sup \
+  --skip-kd \
+  --skip-skd \
+  --epochs-guardrail 20 \
   --skip-sup \
   --skip-kd \
   --skip-skd \
   --batch-size 8 \
-  --lr 1e-4 \
+  --lr 5e-4 \
   --utility-w0 0.5 \
   --utility-w1 0.25 \
   --utility-w2 0.25 \
+  --utility-loss-weight 3.0 \
+  --margin-loss-weight 0.1 \
   --cf-delta 0.05 \
-  --cf-severities 0.0,0.25,0.5,0.75,1.0 \
+  --cf-severities 0.0,0.5,1.0 \
   --log-every 20
 
 echo "[DONE] Stage 4 guardrail complete. Checkpoint: $OUT/guardrail.ckpt"

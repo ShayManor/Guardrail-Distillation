@@ -168,6 +168,22 @@ def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg):
     )
 
     out = {"utility_target": utility_target.clamp(0.0, 1.0)}
+    ignore = labels == IGNORE_INDEX
+    safe = labels.clone()
+    safe[ignore] = 0
+    s_ce = F.cross_entropy(student_logits, safe, reduction="none")
+    t_ce = F.cross_entropy(teacher_logits, safe, reduction="none")
+    gap = (s_ce - t_ce).clamp(min=0)
+    gap[ignore] = 0
+    # Per-image normalize to [0,1]
+    B = gap.shape[0]
+    for b in range(B):
+        v = ~ignore[b]
+        if v.any():
+            gmax = gap[b][v].max()
+            if gmax > 0:
+                gap[b] = gap[b] / gmax
+    out["gap_map"] = gap
 
     if cfg.guardrail_mode in ("margin", "guardrailpp"):
         families = ["underexposure", "motion_blur", "noise", "fog"]

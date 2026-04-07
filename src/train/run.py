@@ -248,11 +248,20 @@ def run_train_pipeline(args, cfg):
         best_student = fresh()
         load_checkpoint(best_student, ckpts["student_skd"], device=cfg.device)
         best_student.to(cfg.device).eval()
+
+        # Probe feature dim
+        feat_ch = 0
+        with torch.no_grad():
+            dummy = torch.randn(1, 3, cfg.crop_size, cfg.crop_size * 2, device=cfg.device)
+            _, feat = best_student(dummy, return_features=True)
+            feat_ch = feat.shape[1]
+            print(f"  [Guard] Student feature channels: {feat_ch}")
+
         if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
-            guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=0, num_families=4)
+            guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
         else:
             guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
-        train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg)
+        train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg, use_student_features=True)
         ckpts["guardrail"] = os.path.join(cfg.output_dir, "guardrail.ckpt")
 
     return ckpts
