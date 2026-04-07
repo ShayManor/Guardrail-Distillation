@@ -64,13 +64,17 @@ class HFSegModelWrapper(nn.Module):
 
     def forward(self, x, return_features=False):
         input_shape = x.shape[-2:]
-        out = self.model(x)
+        out = self.model(x, output_hidden_states=return_features)
         logits = out.logits if hasattr(out, "logits") else out
         logits = F.interpolate(logits, size=input_shape, mode="bilinear", align_corners=False)
 
         if return_features:
-            # Try to grab hidden states if available
-            feat = out.hidden_states[-1] if hasattr(out, "hidden_states") and out.hidden_states else logits
+            if hasattr(out, "hidden_states") and out.hidden_states:
+                feat = out.hidden_states[-1]
+                if feat.shape[-2:] != input_shape:
+                    feat = F.interpolate(feat, size=input_shape, mode="bilinear", align_corners=False)
+            else:
+                feat = logits
             return logits, feat
         return logits
 
