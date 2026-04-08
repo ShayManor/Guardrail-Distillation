@@ -21,7 +21,7 @@ class Config:
     epochs_guardrail: int = 50
     batch_size: int = 8
     lr: float = 1e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-3
     lr_scheduler: str = "cosine"      # cosine | step | poly
     warmup_epochs: int = 5
 
