@@ -42,6 +42,7 @@ python -u src/train/run.py train \
   --epochs-guardrail 20 \
   --batch-size 8 \
   --lr 5e-4 \
+  --weight_decay 1e-3 \
   --utility-loss-weight 3.0 \
   --margin-loss-weight 0.0 \
   --cf-severities 0.0,0.5,1.0 \

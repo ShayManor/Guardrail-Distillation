@@ -132,7 +132,9 @@ class GuardrailHead(nn.Module):
         # Shared encoder
         self.encoder = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Dropout2d(0.3),
             nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Dropout2d(0.3),
             nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
         )
 
