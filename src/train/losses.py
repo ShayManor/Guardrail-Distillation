@@ -227,7 +227,7 @@ class GuardrailPlusLoss(nn.Module):
         self.family_weight = family_weight
         self.margin_loss = margin_loss
         self.rank_weight = 0.5
-        self.gap_weight = 1.0
+        self.gap_weight = 0.0
 
     def forward(self, preds, targets):
         loss = 0.0

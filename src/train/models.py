@@ -207,7 +207,7 @@ class GuardrailPlusHead(nn.Module):
             nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
-        self.gap_head = nn.Conv2d(32, 1, 1)
+        # self.gap_head = nn.Conv2d(32, 1, 1)
         self.utility_head = nn.Linear(32, 1)
         self.margin_head = nn.Linear(32, num_families)
         if self.predict_family_prob:
@@ -230,7 +230,7 @@ class GuardrailPlusHead(nn.Module):
         out = {
             "utility_score": torch.sigmoid(self.utility_head(pooled)).squeeze(1),
             "margin_vec": torch.sigmoid(self.margin_head(pooled)),
-            "gap_heatmap": torch.sigmoid(self.gap_head(enc).squeeze(1)),
+            # "gap_heatmap": torch.sigmoid(self.gap_head(enc).squeeze(1)),
         }
         if self.predict_family_prob:
             out["family_prob"] = torch.softmax(self.family_head(pooled), dim=1)
