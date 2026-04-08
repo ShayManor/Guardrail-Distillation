@@ -210,6 +210,7 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
             guardrail_student_name="student_skd",
             mc_dropout_passes=args.mc_dropout_passes,
             save_dir=benchmark_dir,
+            use_student_features=(feat_ch > 0),
         )
     else:
         print("[Eval] Guardrail checkpoint not found, skipping benchmark.")
