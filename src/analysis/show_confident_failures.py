@@ -1,125 +1,53 @@
-import os
-
+"""Confident failure detection: AUROC across MSP thresholds. Input: CSV dir (first arg)."""
+import os, sys
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-from statsmodels.stats.contingency_tables import mcnemar
-from statsmodels.stats.proportion import proportion_confint
 
-CONF = 0.95
-MIOU = 0.35
+BASE = sys.argv[1] if len(sys.argv) > 1 else "/Users/shay/PycharmProjects/Guardrail-Distillation/src/analysis/cs_b0_b2_eval/csv"
+cf = pd.read_csv(os.path.join(BASE, "confident_failures.csv"))
 
-city = pd.read_csv('./acdc_b0_b2_eval/csv/per_image_acdc.csv')
-acdc = pd.read_csv('./cs_b0_b2_eval/csv/per_image_city.csv')
-for df in [city, acdc]:
-    df['backbone_short'] = df['student_backbone'].str.extract(r'mit-(b\d)')[0]
-    df['seed'] = df['run_id'].str.extract(r'_s(\d+)').astype(int)
+COLORS = {"msp": "#4C72B0", "entropy": "#DD8452", "mc_dropout": "#C44E52",
+          "guardrail": "#8172B3", "oracle": "#937860"}
 
-def compute_summary(df, dataset_label):
-    rows = []
-    for bb in ['b0', 'b1', 'b2']:
-        base = {}
-        for tm in ['sup', 'kd', 'skd']:
-            sub = df[(df['seed'] == 42) & (df['backbone_short'] == bb) & (df['train_method'] == tm)].sort_values('image_id').copy()
-            indicator = ((sub['student_msp'] >= CONF) & (sub['student_miou'] <= MIOU)).astype(int).values
-            count = int(indicator.sum())
-            n = int(len(indicator))
-            lo, hi = proportion_confint(count, n, method='wilson')
-            rows.append({
-                'dataset': dataset_label,
-                'backbone': bb,
-                'method': tm,
-                'count': count,
-                'n': n,
-                'rate': count / n,
-                'ci_low': lo,
-                'ci_high': hi,
-            })
-            base[tm] = indicator
-        for tm in ['kd', 'skd']:
-            x = base[tm]
-            y = base['sup']
-            offdiag_01 = int(((x == 0) & (y == 1)).sum())
-            offdiag_10 = int(((x == 1) & (y == 0)).sum())
-            p_value = mcnemar([[0, offdiag_01], [offdiag_10, 0]], exact=True).pvalue
-            rows.append({
-                'dataset': dataset_label,
-                'backbone': bb,
-                'method': f'{tm}_vs_sup',
-                'p_value': p_value,
-            })
-    return pd.DataFrame(rows)
+thresholds = cf["msp_threshold"].values
+detectors = {
+    "MSP":         ("msp_auroc",        COLORS["msp"],        "s", 1.6, "-"),
+    "Entropy":     ("entropy_auroc",    COLORS["entropy"],    "s", 1.6, "-"),
+    "MC Dropout":  ("mc_dropout_auroc", COLORS["mc_dropout"], "s", 1.6, "-"),
+    "Guardrail++": ("guardrail_auroc",  COLORS["guardrail"],  "o", 2.5, "-"),
+    "Oracle":      ("oracle_auroc",     COLORS["oracle"],     "D", 1.4, "--"),
+}
 
-summary = pd.concat([
-    compute_summary(city, 'Cityscapes'),
-    compute_summary(acdc, 'ACDC'),
-], ignore_index=True)
-summary.to_csv('confident_failure_rate_summary.csv', index=False)
+fig, ax = plt.subplots(figsize=(7.5, 5), dpi=200)
 
-def p_to_stars(p):
-    if pd.isna(p):
-        return ''
-    if p < 1e-3:
-        return '***'
-    if p < 1e-2:
-        return '**'
-    if p < 5e-2:
-        return '*'
-    return 'ns'
+for label, (col, color, marker, lw, ls) in detectors.items():
+    vals = cf[col].values
+    ax.plot(thresholds, vals, ls, color=color, label=label,
+            linewidth=lw, marker=marker, markersize=6 if label == "Guardrail++" else 5)
 
-def plot_dataset(dataset, outpath):
-    data = summary[(summary.dataset == dataset) & (summary.method.isin(['sup', 'kd', 'skd']))].copy()
-    pvals = summary[(summary.dataset == dataset) & (summary.method.str.contains('_vs_sup'))].copy()
+ax.axhline(0.5, color="gray", ls=":", alpha=0.5)
+ax.set_xlabel("MSP confidence threshold")
+ax.set_ylabel("AUROC for detecting failures")
+ax.set_title("Guardrail++ advantage widens at high confidence",
+             fontsize=12, fontweight="bold")
+ax.legend(fontsize=9, loc="upper left")
+ax.set_ylim(0.45, 0.75)
 
-    methods = ['sup', 'kd', 'skd']
-    labels = {
-        'sup': 'Supervised student',
-        'kd': 'KD student',
-        'skd': 'SKD student',
-    }
+# Annotate headline result at MSP >= 0.97
+g97 = float(cf[cf["msp_threshold"] == 0.97]["guardrail_auroc"].iloc[0])
+m97 = float(cf[cf["msp_threshold"] == 0.97]["msp_auroc"].iloc[0])
+delta = g97 - m97
+ax.annotate(f"Δ = {delta:+.4f}",
+            xy=(0.97, g97), xytext=(0.925, 0.69),
+            fontsize=9, fontweight="bold", color=COLORS["guardrail"],
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=COLORS["guardrail"]))
 
-    x = np.arange(3)
-    width = 0.24
-    fig, ax = plt.subplots(figsize=(10, 5.6))
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.grid(alpha=0.2)
+fig.tight_layout()
 
-    for i, method in enumerate(methods):
-        sub = data[data.method == method].set_index('backbone').loc[['b0', 'b1', 'b2']]
-        offs = (i - 1) * width
-        y = sub['rate'].values * 100
-        yerr = np.vstack([
-            (sub['rate'] - sub['ci_low']).values * 100,
-            (sub['ci_high'] - sub['rate']).values * 100,
-        ])
-        ax.bar(x + offs, y, width=width, label=labels[method], capsize=4)
-        # for xi, yi, count, n in zip(x + offs, y, sub['count'], sub['n']):
-            # ax.text(xi, yi + max(0.7, yi * 0.03), f'{int(count)}/{int(n)}', ha='center', va='bottom', fontsize=9, rotation=90)
-
-    for j, bb in enumerate(['b0', 'b1', 'b2']):
-        for method in ['kd', 'skd']:
-            p = float(pvals[(pvals.backbone == bb) & (pvals.method == f'{method}_vs_sup')]['p_value'].iloc[0])
-            rate = float(data[(data.backbone == bb) & (data.method == method)]['rate'].iloc[0]) * 100
-            xloc = j + (-1 + methods.index(method)) * width
-            # ax.text(xloc, rate + 4.5, p_to_stars(p), ha='center', va='bottom', fontsize=12, fontweight='bold')
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(['MiT-B0', 'MiT-B1', 'MiT-B2'])
-    ax.set_ylabel('Rate of confident, wrong frames (%)')
-    ax.set_title(f'{dataset}: confident failure rate\nstudent MSP ≥ {CONF:.2f} and frame mIoU ≤ {MIOU:.2f}')
-    ax.legend(frameon=False, fontsize=9, loc='upper left')
-    ax.set_ylim(0, max(data['ci_high'] * 100) + 2)
-    ax.spines[['top', 'right']].set_visible(False)
-    # ax.text(
-    #     0.995,
-    #     -0.18,
-    #     'Error bars: Wilson 95% CI. Stars: exact McNemar test vs supervised student.',
-    #     transform=ax.transAxes,
-    #     ha='right',
-    #     va='top',
-    #     fontsize=9,
-    # )
-    plt.tight_layout()
-    fig.savefig(outpath, dpi=220, bbox_inches='tight')
-    plt.close(fig)
-
-plot_dataset('Cityscapes', 'confident_failure_rate_city.png')
-plot_dataset('ACDC', 'confident_failure_rate_acdc.png')
+out = os.path.join(BASE, "figure_confident_failures.png")
+fig.savefig(out, dpi=220, bbox_inches="tight")
+plt.close(fig)
+print("Saved:", out)

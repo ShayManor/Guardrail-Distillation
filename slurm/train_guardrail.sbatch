@@ -24,8 +24,6 @@ cd "$REPO"
 MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
-# ── Which output dir has existing student checkpoints? ──
-# Change this to your latest outputs dir that has student_sup/kd/skd.ckpt
 SRC_DIR=outputs-guardrailpp-v2
 OUT=outputs-guardrailpp-v4
 
@@ -45,7 +43,7 @@ python -u src/train/run.py train \
   --teacher-model "$TEACHER" \
   --guardrail-mode guardrailpp \
   --skip-sup --skip-kd --skip-skd \
-  --epochs-guardrail 30 \
+  --epochs-guardrail 20 \
   --batch-size 8 \
   --lr 5e-4 \
   --utility-loss-weight 1.0 \
