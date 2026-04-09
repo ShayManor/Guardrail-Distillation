@@ -40,13 +40,15 @@ def parse_args():
     train_p.add_argument("--utility-w0",       type=float, default=0.5)
     train_p.add_argument("--utility-w1",       type=float, default=0.25)
     train_p.add_argument("--utility-w2",       type=float, default=0.25)
-    train_p.add_argument("--cf-delta",         type=float, default=0.05)
-    train_p.add_argument("--cf-severities",    default="0.0,0.25,0.5,0.75,1.0")
+    train_p.add_argument("--cf-delta",         type=float, default=0.02)
+    train_p.add_argument("--cf-severities",    default="0.25,0.5,0.75,1.0")
     train_p.add_argument("--utility-loss-weight", type=float, default=1.0)
     train_p.add_argument("--margin-loss-weight",  type=float, default=1.0)
     train_p.add_argument("--family-loss-weight",  type=float, default=0.0)
     train_p.add_argument("--margin-loss",      default="huber", choices=["huber", "mse"])
     train_p.add_argument("--mc-dropout-passes",type=int,   default=0)
+    train_p.add_argument("--corruption-prob",   type=float, default=0.5)
+    train_p.add_argument("--use-student-features", action="store_true")
     train_p.add_argument("--skip-sup",         action="store_true")
     train_p.add_argument("--skip-kd",          action="store_true")
     train_p.add_argument("--skip-skd",         action="store_true")
@@ -74,7 +76,7 @@ def parse_args():
 def build_cfg(args):
     from config import Config
     mode = getattr(args, "guardrail_mode", "utility")
-    cf_severities = tuple(float(x.strip()) for x in getattr(args, "cf_severities", "0.0,0.25,0.5,0.75,1.0").split(",") if x.strip())
+    cf_severities = tuple(float(x.strip()) for x in getattr(args, "cf_severities", "0.25,0.5,0.75,1.0").split(",") if x.strip())
     return Config(
         dataset_path=args.dataset_path,
         num_classes=args.num_classes,
@@ -96,12 +98,14 @@ def build_cfg(args):
         utility_w0=getattr(args, "utility_w0", 0.5),
         utility_w1=getattr(args, "utility_w1", 0.25),
         utility_w2=getattr(args, "utility_w2", 0.25),
-        cf_delta=getattr(args, "cf_delta", 0.05),
+        cf_delta=getattr(args, "cf_delta", 0.02),
         cf_severities=cf_severities,
         utility_loss_weight=getattr(args, "utility_loss_weight", 1.0),
         margin_loss_weight=getattr(args, "margin_loss_weight", 1.0),
         family_loss_weight=getattr(args, "family_loss_weight", 0.0),
         margin_loss=getattr(args, "margin_loss", "huber"),
+        corruption_prob=getattr(args, "corruption_prob", 0.5),
+        use_student_features=getattr(args, "use_student_features", False),
     )
 
 
@@ -254,19 +258,23 @@ def run_train_pipeline(args, cfg):
         load_checkpoint(best_student, ckpts["student_skd"], device=cfg.device)
         best_student.to(cfg.device).eval()
 
-        # Probe feature dim
+        # Probe feature dim (only used if --use-student-features is set)
         feat_ch = 0
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, cfg.crop_size, cfg.crop_size * 2, device=cfg.device)
-            _, feat = best_student(dummy, return_features=True)
-            feat_ch = feat.shape[1]
-            print(f"  [Guard] Student feature channels: {feat_ch}")
+        if cfg.use_student_features:
+            with torch.no_grad():
+                dummy = torch.randn(1, 3, cfg.crop_size, cfg.crop_size * 2, device=cfg.device)
+                _, feat = best_student(dummy, return_features=True)
+                feat_ch = feat.shape[1]
+                print(f"  [Guard] Student feature channels: {feat_ch}")
+        else:
+            print(f"  [Guard] Logits-only mode (feat_channels=0)")
 
         if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
             guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
         else:
             guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
-        train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg, use_student_features=True)
+        train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg,
+                        use_student_features=cfg.use_student_features)
         ckpts["guardrail"] = os.path.join(cfg.output_dir, "guardrail.ckpt")
 
     return ckpts

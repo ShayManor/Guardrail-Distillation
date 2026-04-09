@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=guardrailpp-eval
+#SBATCH --job-name=guardrailpp-full
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -7,8 +7,11 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/guardrailpp-eval_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/guardrailpp-eval_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/guardrailpp-full_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/guardrailpp-full_%j.err
+
+# Full pipeline: trains sup -> kd -> skd -> guardrail from scratch.
+# If you already have student checkpoints, use train_guardrail.sbatch instead.
 
 set -euo pipefail
 
@@ -32,18 +35,19 @@ HF_HOME=/scratch/gautschi/manors/hf_cache \
   python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir outputs-guardrailpp \
---student-model "$MIT_B0" \
---teacher-model "$TEACHER" \
+  --student-model "$MIT_B0" \
+  --teacher-model "$TEACHER" \
   --guardrail-mode guardrailpp \
   --epochs-sup 20 \
   --epochs-kd 20 \
   --epochs-skd 20 \
-  --epochs-guardrail 20 \
+  --epochs-guardrail 30 \
   --batch-size 8 \
   --lr 1e-4 \
   --utility-w0 0.5 \
   --utility-w1 0.25 \
   --utility-w2 0.25 \
-  --cf-delta 0.05 \
-  --cf-severities 0.0,0.25,0.5,0.75,1.0 \
+  --cf-delta 0.02 \
+  --cf-severities 0.25,0.5,0.75,1.0 \
+  --corruption-prob 0.5 \
   --log-every 20

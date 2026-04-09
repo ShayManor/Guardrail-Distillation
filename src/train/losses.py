@@ -226,7 +226,7 @@ class GuardrailPlusLoss(nn.Module):
         self.margin_weight = margin_weight
         self.family_weight = family_weight
         self.margin_loss = margin_loss
-        self.rank_weight = 0.5
+        self.rank_weight = 0.1
         self.gap_weight = 0.0
 
     def forward(self, preds, targets):
@@ -266,7 +266,10 @@ class GuardrailPlusLoss(nn.Module):
             if u_pred.shape[0] >= 2:
                 diff_pred = u_pred.unsqueeze(0) - u_pred.unsqueeze(1)
                 diff_true = (u_true.unsqueeze(0) - u_true.unsqueeze(1)).sign()
-                rank_loss = F.relu(0.05 - diff_pred * diff_true).mean()
+                # Adaptive margin: scale with target spread to avoid degenerate
+                # constant loss when targets are near-constant
+                margin = max(0.01, 0.5 * float(u_true.std().item()))
+                rank_loss = F.relu(margin - diff_pred * diff_true).mean()
                 loss = loss + self.rank_weight * rank_loss
                 info["rank_loss"] = float(rank_loss.item())
 
