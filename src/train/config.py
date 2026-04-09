@@ -38,12 +38,14 @@ class Config:
     utility_w0: float = 0.5
     utility_w1: float = 0.25
     utility_w2: float = 0.25
-    cf_delta: float = 0.05
-    cf_severities: tuple = field(default_factory=lambda: (0.0, 0.25, 0.5, 0.75, 1.0))
+    cf_delta: float = 0.02
+    cf_severities: tuple = field(default_factory=lambda: (0.25, 0.5, 0.75, 1.0))
     utility_loss_weight: float = 1.0
     margin_loss_weight: float = 1.0
     family_loss_weight: float = 0.0
     margin_loss: str = "huber"
+    corruption_prob: float = 0.5
+    use_student_features: bool = False
 
     # ── Data ──
     crop_size: int = 512

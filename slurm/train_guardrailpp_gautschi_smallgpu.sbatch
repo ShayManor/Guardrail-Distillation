@@ -38,12 +38,13 @@ HF_HOME=/scratch/gautschi/manors/hf_cache \
   --epochs-sup 20 \
   --epochs-kd 20 \
   --epochs-skd 20 \
-  --epochs-guardrail 20 \
+  --epochs-guardrail 30 \
   --batch-size 8 \
   --lr 1e-4 \
   --utility-w0 0.5 \
   --utility-w1 0.25 \
   --utility-w2 0.25 \
-  --cf-delta 0.05 \
-  --cf-severities 0.0,0.25,0.5,0.75,1.0 \
+  --cf-delta 0.02 \
+  --cf-severities 0.25,0.5,0.75,1.0 \
+  --corruption-prob 0.5 \
   --log-every 20

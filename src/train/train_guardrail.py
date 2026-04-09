@@ -1,5 +1,7 @@
 """Stage 4: Train guardrail head on frozen student with teacher-grounded labels."""
 
+import random
+
 import torch
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
@@ -155,10 +157,20 @@ def _teacher_benefit_weighted(student_logits, teacher_logits, labels, weights):
     return utility
 
 
-def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg):
+def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg,
+                               student_logits=None, teacher_logits=None):
+    """Build Guardrail++ targets: utility, gap map, margin vector.
+
+    Uses relative margin thresholds: the margin for a corruption family is the
+    minimum severity at which the *additional* teacher benefit (above the current
+    input's baseline) exceeds cf_delta. This prevents clean-data teacher benefit
+    from trivially triggering the threshold at severity=0.
+    """
     with torch.no_grad():
-        student_logits = student(imgs)
-        teacher_logits = teacher(imgs)
+        if student_logits is None:
+            student_logits = student(imgs)
+        if teacher_logits is None:
+            teacher_logits = teacher(imgs)
 
     utility_target = _teacher_benefit_weighted(
         student_logits,
@@ -183,17 +195,24 @@ def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg):
         severity_grid = cfg.cf_severities
         margins = []
 
+        # Baseline benefit on the (possibly already corrupted) input
+        baseline_benefit, _, _ = _teacher_benefit(student_logits, teacher_logits, labels)
+
         for fam in families:
             crossed = torch.zeros(imgs.shape[0], device=imgs.device, dtype=torch.bool)
             fam_margin = torch.ones(imgs.shape[0], device=imgs.device)
 
             for sev in severity_grid:
+                if sev == 0.0:
+                    continue  # skip clean — measured via baseline
                 corrupted = _apply_corruption(imgs, fam, sev)
                 with torch.no_grad():
                     s_cor = student(corrupted)
                     t_cor = teacher(corrupted)
                 benefit_cor, _, _ = _teacher_benefit(s_cor, t_cor, labels)
-                hit = benefit_cor >= cfg.cf_delta
+                # Relative threshold: additional benefit above baseline
+                additional_benefit = benefit_cor - baseline_benefit
+                hit = additional_benefit >= cfg.cf_delta
                 update_mask = (~crossed) & hit
                 fam_margin[update_mask] = float(sev)
                 crossed = crossed | hit
@@ -243,11 +262,23 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
     best_loss = float("inf")
     best_path = f"{cfg.output_dir}/guardrail.ckpt"
 
+    corruption_prob = getattr(cfg, "corruption_prob", 0.5)
+
     for epoch in range(cfg.epochs_guardrail):
         tracker = MetricTracker()
 
         for step, (imgs, lbls) in enumerate(train_loader):
             imgs, lbls = imgs.to(device), lbls.to(device)
+
+            # Per-image online corruption augmentation for guardrail++ modes
+            if cfg.guardrail_mode in plus_modes and corruption_prob > 0:
+                for i in range(imgs.shape[0]):
+                    if random.random() < corruption_prob:
+                        fam = random.choice(MARGIN_FAMILY_NAMES)
+                        sev = 0.2 + 0.6 * random.random()  # uniform [0.2, 0.8]
+                        imgs[i] = _apply_corruption(
+                            imgs[i:i+1], fam, sev
+                        ).squeeze(0)
 
             with autocast("cuda", enabled=cfg.fp16):
                 with torch.no_grad():
@@ -260,7 +291,11 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
                     teacher_logits = teacher(imgs)
 
                 if cfg.guardrail_mode in plus_modes:
-                    targets = _build_guardrailpp_targets(student, teacher, imgs, lbls, cfg)
+                    targets = _build_guardrailpp_targets(
+                        student, teacher, imgs, lbls, cfg,
+                        student_logits=student_logits,
+                        teacher_logits=teacher_logits,
+                    )
                 else:
                     targets = compute_guardrail_targets(
                         student_logits, teacher_logits, lbls, mode=cfg.guardrail_mode
@@ -374,7 +409,11 @@ def _eval_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_fe
         teacher_logits = teacher(imgs)
 
         if cfg.guardrail_mode in plus_modes:
-            targets = _build_guardrailpp_targets(student, teacher, imgs, lbls, cfg)
+            targets = _build_guardrailpp_targets(
+                student, teacher, imgs, lbls, cfg,
+                student_logits=student_logits,
+                teacher_logits=teacher_logits,
+            )
         else:
             targets = compute_guardrail_targets(
                 student_logits, teacher_logits, lbls, mode=cfg.guardrail_mode
