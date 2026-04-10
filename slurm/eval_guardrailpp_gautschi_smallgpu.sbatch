@@ -6,8 +6,8 @@
 #SBATCH --time=0:30:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmemn
-#SBATCH -o /scratch/gautschi/manors/logs/gpp-5-eval-v3_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/gpp-5-eval-v3_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/gpp-5-eval-v4_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/gpp-5-eval-v4_%j.err
 
 set -euo pipefail
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
@@ -27,7 +27,7 @@ OUT=outputs-guardrailpp-v4
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/eval/full_eval.py eval \
-  --run-id guardrailpp_v3_cityscapes_val \
+  --run-id guardrailpp_v4_cityscapes_val \
   --dataset-name cityscapes \
   --dataset-path "$REPO/data/cityscapes" \
   --split val \
@@ -40,6 +40,6 @@ python -u src/eval/full_eval.py eval \
   --guardrail-ckpt "$OUT/guardrail.ckpt" \
   --guardrail-student-name student_skd \
   --mc-dropout-passes 4 \
-  --output-dir "$REPO/paper_eval_v3" \
+  --output-dir "$REPO/paper_eval_v4" \
   --batch-size 2 \
   --num-workers 4
