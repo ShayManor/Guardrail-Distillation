@@ -502,7 +502,7 @@ def run_benchmark(
 
     # ── wandb logging ──
     try:
-        from wandb_utils import log_eval_results
+        from _wandb_helpers import log_eval_results
         log_eval_results(all_summary, all_confident_failure, save_path=save_path)
     except Exception as e:
         print(f"[wandb] Eval logging skipped: {e}")
