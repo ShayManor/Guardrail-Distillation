@@ -1,12 +1,14 @@
 """Stage 4: Train guardrail head on frozen student with teacher-grounded labels."""
 
 import random
+import time
 
 import torch
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from losses import GuardrailLoss, GuardrailPlusLoss, compute_guardrail_targets
 from utils import MetricTracker, build_scheduler
+from wandb_utils import wandb_log, log_system_metrics
 
 IGNORE_INDEX = 255
 DYNAMIC_CLASS_IDS = [11, 12, 13, 14, 15, 17, 18]
@@ -227,8 +229,11 @@ def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg,
 
 
 def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
-                    use_student_features=False):
-    """Train guardrail or Guardrail++ head. Student and teacher are frozen."""
+                    use_student_features=False, global_step=0):
+    """Train guardrail or Guardrail++ head. Student and teacher are frozen.
+
+    Returns (best_path, global_step).
+    """
     print("\n" + "=" * 60)
     print("STAGE 4: Guardrail Training")
     print("=" * 60)
@@ -263,6 +268,7 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
     best_path = f"{cfg.output_dir}/guardrail.ckpt"
 
     corruption_prob = getattr(cfg, "corruption_prob", 0.5)
+    log_interval_start = time.time()
 
     for epoch in range(cfg.epochs_guardrail):
         tracker = MetricTracker()
@@ -306,9 +312,17 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
+
+            grad_norm = None
+            if (step + 1) % cfg.log_every == 0:
+                _sc = scaler.get_scale()
+                _gn = sum(p.grad.data.norm(2).item() ** 2 for p in guardrail.parameters() if p.grad is not None)
+                grad_norm = (_gn ** 0.5) / max(_sc, 1e-12)
+
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
+            global_step += 1
 
             tracker.update("loss", loss.item())
             for k, v in loss_info.items():
@@ -316,8 +330,41 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
 
             if (step + 1) % cfg.log_every == 0:
                 s = tracker.summary()
+                elapsed = time.time() - log_interval_start
                 parts = " ".join(f"{k}={v:.4f}" for k, v in s.items())
                 print(f"  [Guard] Epoch {epoch+1}/{cfg.epochs_guardrail} Step {step+1} {parts}")
+
+                wb = {f"guardrail/{k}": v for k, v in s.items()}
+                wb["guardrail/learning_rate"] = optimizer.param_groups[0]["lr"]
+                wb["guardrail/epoch"] = epoch + 1
+                wb["guardrail/grad_norm"] = grad_norm
+                wb["guardrail/grad_scaler"] = scaler.get_scale()
+                wb["perf/step_time_sec"] = elapsed / cfg.log_every
+                wb["perf/throughput_img_per_sec"] = (
+                    cfg.log_every * cfg.batch_size / max(elapsed, 1e-6)
+                )
+
+                # Target & prediction statistics (guardrail++ modes)
+                if cfg.guardrail_mode in plus_modes:
+                    if "utility_target" in targets:
+                        ut = targets["utility_target"]
+                        wb["guardrail/utility_target_mean"] = ut.mean().item()
+                        wb["guardrail/utility_target_std"] = ut.std().item()
+                    if "margin_target" in targets:
+                        mt = targets["margin_target"]
+                        wb["guardrail/margin_target_mean"] = mt.mean().item()
+                        wb["guardrail/margin_target_min"] = mt.min().item()
+                    if "utility_score" in preds:
+                        up = preds["utility_score"]
+                        wb["guardrail/utility_pred_mean"] = up.mean().item()
+                        wb["guardrail/utility_pred_std"] = up.std().item()
+                    if "margin_vec" in preds:
+                        mp = preds["margin_vec"]
+                        wb["guardrail/margin_pred_mean"] = mp.mean().item()
+
+                wandb_log(wb, step=global_step)
+                log_system_metrics(global_step)
+                log_interval_start = time.time()
 
         val_loss = _eval_guardrail(guardrail, student, teacher, val_loader, cfg,
                                    use_student_features)
@@ -333,6 +380,12 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
             }, best_path)
             print(f"  → Saved guardrail: {best_path}")
 
+        wandb_log({
+            "guardrail/val_loss": val_loss,
+            "guardrail/best_val_loss": best_loss,
+            "guardrail/epoch": epoch + 1,
+        }, step=global_step)
+
     print(f"  [Guard] Best val loss={best_loss:.4f}")
     if cfg.guardrail_mode in plus_modes:
         from utils import load_checkpoint as _lc
@@ -340,7 +393,7 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
         guardrail.load_state_dict(best_state["model"])
         calib_path = calibrate_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_features)
 
-    return best_path
+    return best_path, global_step
 
 def calibrate_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_features=False):
     """Post-hoc isotonic calibration of utility scores against true teacher benefit."""

@@ -4,6 +4,8 @@ import torch
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+from wandb_utils import setup_wandb, wandb_log, log_eval_results, finish_wandb
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Guardrail Distillation Pipeline")
@@ -53,6 +55,12 @@ def parse_args():
     train_p.add_argument("--skip-kd",          action="store_true")
     train_p.add_argument("--skip-skd",         action="store_true")
     train_p.add_argument("--skip-guardrail",   action="store_true")
+
+    # wandb
+    train_p.add_argument("--wandb-project",    default="guardrail-distillation")
+    train_p.add_argument("--wandb-group",      default=None)
+    train_p.add_argument("--wandb-name",       default=None)
+    train_p.add_argument("--no-wandb",         action="store_true", help="Disable wandb logging")
 
     # ── Eval mode ──────────────────────────────────────────────────────────────
     eval_p = subparsers.add_parser("eval", parents=[shared], help="Run eval from existing checkpoints")
@@ -234,9 +242,11 @@ def run_train_pipeline(args, cfg):
     fresh = lambda: make_fresh_student(args, cfg)
 
     ckpts = default_checkpoints(cfg.output_dir)
+    global_step = 0
 
     if not args.skip_sup:
-        ckpts["student_sup"] = train_supervised(fresh(), train_loader, val_loader, cfg)
+        ckpts["student_sup"], global_step = train_supervised(
+            fresh(), train_loader, val_loader, cfg, global_step=global_step)
 
     if not args.skip_kd:
         print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
@@ -244,14 +254,16 @@ def run_train_pipeline(args, cfg):
         cfg_kd.lr = cfg_kd.lr * 0.5
         student_kd = fresh()
         load_checkpoint(student_kd, ckpts["student_sup"], device=cfg_kd.device)
-        ckpts["student_kd"] = train_kd(student_kd, teacher, train_loader, val_loader, cfg_kd)
+        ckpts["student_kd"], global_step = train_kd(
+            student_kd, teacher, train_loader, val_loader, cfg_kd, global_step=global_step)
 
     if not args.skip_skd:
         cfg_skd = build_cfg(args)
         cfg_skd.lr = cfg_skd.lr * 0.5
         student_skd = fresh()
         load_checkpoint(student_skd, ckpts["student_sup"], device=cfg_skd.device)
-        ckpts["student_skd"] = train_skd(student_skd, teacher, train_loader, val_loader, cfg_skd)
+        ckpts["student_skd"], global_step = train_skd(
+            student_skd, teacher, train_loader, val_loader, cfg_skd, global_step=global_step)
 
     if not args.skip_guardrail:
         best_student = fresh()
@@ -273,8 +285,9 @@ def run_train_pipeline(args, cfg):
             guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
         else:
             guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
-        train_guardrail(guardrail, best_student, teacher, train_loader, val_loader, cfg,
-                        use_student_features=cfg.use_student_features)
+        _, global_step = train_guardrail(
+            guardrail, best_student, teacher, train_loader, val_loader, cfg,
+            use_student_features=cfg.use_student_features, global_step=global_step)
         ckpts["guardrail"] = os.path.join(cfg.output_dir, "guardrail.ckpt")
 
     return ckpts
@@ -286,8 +299,10 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     if args.mode == "train":
+        setup_wandb(cfg, args)
         ckpts = run_train_pipeline(args, cfg)
         run_eval_pipeline(args, cfg, ckpts)
+        finish_wandb()
 
     elif args.mode == "eval":
         if args.checkpoints:

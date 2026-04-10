@@ -386,8 +386,8 @@ try:
 
     from train_guardrail import train_guardrail
 
-    best_path = train_guardrail(guard, s, t, train_loader, val_loader, mini_cfg,
-                                use_student_features=False)
+    best_path, _ = train_guardrail(guard, s, t, train_loader, val_loader, mini_cfg,
+                                   use_student_features=False)
 
     test("end-to-end training completes without error", True)
     test("checkpoint file is saved",

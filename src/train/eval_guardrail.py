@@ -500,6 +500,13 @@ def run_benchmark(
     _plot_selective_gain(all_gain_curves, save_path)
     _plot_confident_wrong_scatter(all_results, save_path)
 
+    # ── wandb logging ──
+    try:
+        from wandb_utils import log_eval_results
+        log_eval_results(all_summary, all_confident_failure, save_path=save_path)
+    except Exception as e:
+        print(f"[wandb] Eval logging skipped: {e}")
+
     return all_summary
 
 

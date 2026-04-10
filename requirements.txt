@@ -7,3 +7,4 @@ torchvision
 kaggle
 opencv-python
 scikit-learn
+wandb
