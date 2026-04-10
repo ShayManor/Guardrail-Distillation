@@ -871,8 +871,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 feat = None
                 if isinstance(out, tuple) and len(out) > 1:
                     feat = out[1]
+                _wfeat = feat if guardrail_expects_feat else None
                 try:
-                    _ = guardrail(logits, feat)
+                    _ = guardrail(logits, _wfeat)
                 except TypeError:
                     _ = guardrail(logits)
 
