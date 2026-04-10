@@ -21,30 +21,42 @@ export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
-MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
+# ── Change MODEL to switch backbone (b0, b1, b2, …) ──
+MODEL=${MODEL:-b0}
+
+MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
-SRC_DIR=outputs-guardrailpp-v2
-OUT=outputs-guardrailpp-v4
-
-mkdir -p "$OUT"
-for ckpt in student_sup.ckpt student_kd.ckpt student_skd.ckpt; do
-  if [ ! -f "$OUT/$ckpt" ]; then
-    cp "$SRC_DIR/$ckpt" "$OUT/$ckpt"
-    echo "Copied $SRC_DIR/$ckpt -> $OUT/$ckpt"
+# Auto-discover latest SKD run for mit-${MODEL} (override: SRC_DIR=<path> sbatch ...)
+SRC_DIR="${SRC_DIR:-}"
+if [ -z "$SRC_DIR" ]; then
+  SRC_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt outputs*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  if [ -z "$SRC_DIR" ]; then
+    echo "ERROR: No SKD run found for mit-${MODEL}. Run train_skd.sbatch first or set SRC_DIR."
+    exit 1
   fi
-done
+  echo "[auto] Found latest SKD run: $SRC_DIR"
+fi
+
+OUT="runs/mit-${MODEL}_guard_j${SLURM_JOB_ID}"
+
+# Verify source checkpoint exists
+if [ ! -f "$SRC_DIR/student_skd.ckpt" ]; then
+  echo "ERROR: $SRC_DIR/student_skd.ckpt not found."
+  exit 1
+fi
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir "$OUT" \
-  --student-model "$MIT_B0" \
+  --checkpoint-dir "$SRC_DIR" \
+  --student-model "$MIT_STUDENT" \
   --teacher-model "$TEACHER" \
   --guardrail-mode guardrailpp \
   --skip-sup --skip-kd --skip-skd \
-  --epochs-guardrail 20 \
-  --batch-size 8 \
+  --epochs-guardrail 35 \
+  --batch-size 16 \
   --lr 5e-4 \
   --utility-loss-weight 1.0 \
   --margin-loss-weight 1.0 \
@@ -53,4 +65,7 @@ python -u src/train/run.py train \
   --corruption-prob 0.5 \
   --log-every 20
 
-echo "[DONE] Guardrail training complete. Checkpoint: $OUT/guardrail.ckpt"
+echo "[DONE] Guardrail training complete."
+echo "  Output dir: $OUT"
+echo "  Checkpoint: $OUT/guardrail.ckpt"
+echo "  Source dir:  $SRC_DIR"

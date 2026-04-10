@@ -25,16 +25,19 @@ unset DISPLAY
 mkdir -p /scratch/gautschi/manors/logs
 cd "$REPO"
 
-MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
+# ── Change MODEL to switch backbone (b0, b1, b2, …) ──
+MODEL=${MODEL:-b0}
+
+MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
-OUT=outputs-guardrailpp-v2
+OUT="runs/mit-${MODEL}_sup_j${SLURM_JOB_ID}"
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir "$OUT" \
-  --student-model "$MIT_B0" \
+  --student-model "$MIT_STUDENT" \
   --teacher-model "$TEACHER" \
   --guardrail-mode guardrailpp \
   --epochs-sup 80 \
@@ -44,8 +47,10 @@ python -u src/train/run.py train \
   --skip-kd \
   --skip-skd \
   --skip-guardrail \
-  --batch-size 8 \
+  --batch-size 16 \
   --lr 6e-5 \
   --log-every 20
 
-echo "[DONE] Stage 1 sup complete. Checkpoint: $OUT/student_sup.ckpt"
+echo "[DONE] Stage 1 sup complete."
+echo "  Output dir: $OUT"
+echo "  Checkpoint: $OUT/student_sup.ckpt"

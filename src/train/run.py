@@ -1,10 +1,11 @@
 import os
 import argparse
+import datetime
 import torch
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-from wandb_utils import setup_wandb, wandb_log, log_eval_results, finish_wandb
+from _wandb_helpers import setup_wandb, wandb_log, log_eval_results, finish_wandb
 
 
 def parse_args():
@@ -14,7 +15,8 @@ def parse_args():
     # ── Shared args ────────────────────────────────────────────────────────────
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--dataset-path",   default="/root/Guardrail-Distillation/data/cityscapes")
-    shared.add_argument("--output-dir",     default="outputs-mit-b0")
+    shared.add_argument("--output-dir",     default=None,
+        help="Output directory. Auto-generated with timestamp if not set in train mode.")
     shared.add_argument("--num-classes",    type=int,   default=19)
     shared.add_argument("--device",         default="cuda" if torch.cuda.is_available() else "cpu")
     shared.add_argument("--num-workers",    type=int,   default=0)
@@ -61,6 +63,9 @@ def parse_args():
     train_p.add_argument("--wandb-group",      default=None)
     train_p.add_argument("--wandb-name",       default=None)
     train_p.add_argument("--no-wandb",         action="store_true", help="Disable wandb logging")
+    train_p.add_argument("--seed",             type=int, default=42)
+    train_p.add_argument("--checkpoint-dir",   default=None,
+        help="Load checkpoints from this dir when using --skip-* flags. Defaults to --output-dir.")
 
     # ── Eval mode ──────────────────────────────────────────────────────────────
     eval_p = subparsers.add_parser("eval", parents=[shared], help="Run eval from existing checkpoints")
@@ -114,6 +119,7 @@ def build_cfg(args):
         margin_loss=getattr(args, "margin_loss", "huber"),
         corruption_prob=getattr(args, "corruption_prob", 0.5),
         use_student_features=getattr(args, "use_student_features", False),
+        seed=getattr(args, "seed", 42),
     )
 
 
@@ -241,7 +247,10 @@ def run_train_pipeline(args, cfg):
     teacher = load_teacher(args, cfg)
     fresh = lambda: make_fresh_student(args, cfg)
 
-    ckpts = default_checkpoints(cfg.output_dir)
+    ckpt_dir = getattr(args, "checkpoint_dir", None) or cfg.output_dir
+    ckpts = default_checkpoints(ckpt_dir)
+    if ckpt_dir != cfg.output_dir:
+        print(f"[run] Loading initial checkpoints from: {ckpt_dir}")
     global_step = 0
 
     if not args.skip_sup:
@@ -295,8 +304,27 @@ def run_train_pipeline(args, cfg):
 
 def main():
     args = parse_args()
+
+    # Auto-generate unique output directory for training if not specified
+    if args.output_dir is None:
+        if args.mode == "train":
+            student_short = args.student_model.split("/")[-1]
+            mode = getattr(args, "guardrail_mode", "utility")
+            seed = getattr(args, "seed", 42)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            parts = [student_short, mode, f"s{seed}"]
+            slurm_job = os.environ.get("SLURM_JOB_ID")
+            if slurm_job:
+                parts.append(f"j{slurm_job}")
+            parts.append(ts)
+            args.output_dir = os.path.join("runs", "_".join(parts))
+        elif args.mode == "eval":
+            print("ERROR: --output-dir is required for eval mode")
+            raise SystemExit(1)
+
     cfg = build_cfg(args)
     os.makedirs(args.output_dir, exist_ok=True)
+    print(f"[run] Output directory: {args.output_dir}")
 
     if args.mode == "train":
         setup_wandb(cfg, args)

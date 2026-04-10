@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from losses import GuardrailLoss, GuardrailPlusLoss, compute_guardrail_targets
 from utils import MetricTracker, build_scheduler
-from wandb_utils import wandb_log, log_system_metrics
+from _wandb_helpers import wandb_log, log_system_metrics
 
 IGNORE_INDEX = 255
 DYNAMIC_CLASS_IDS = [11, 12, 13, 14, 15, 17, 18]

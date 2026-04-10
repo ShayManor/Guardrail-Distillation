@@ -6,7 +6,7 @@ import torch
 from torch.amp import GradScaler, autocast
 from losses import SegLoss, KDLoss, PairwiseAffinityLoss
 from utils import MetricTracker, save_checkpoint, evaluate, build_scheduler, compute_miou
-from wandb_utils import wandb_log, log_system_metrics
+from _wandb_helpers import wandb_log, log_system_metrics
 
 
 def train_skd(student, teacher, train_loader, val_loader, cfg, global_step=0):

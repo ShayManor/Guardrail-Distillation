@@ -1,13 +1,13 @@
 #!/bin/bash -l
-#SBATCH --job-name=gpp-5-eval
+#SBATCH --job-name=gpp-eval-acdc
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
-#SBATCH --time=0:30:00
+#SBATCH --time=04:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
-#SBATCH -o /scratch/gautschi/manors/logs/gpp-5-eval-v4_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/gpp-5-eval-v4_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/gpp-eval-acdc_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/gpp-eval-acdc_%j.err
 
 set -euo pipefail
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
@@ -50,32 +50,39 @@ fi
 
 STUDENT_CKPT="$SKD_DIR/student_skd.ckpt"
 GUARDRAIL_CKPT="$GUARD_DIR/guardrail.ckpt"
-EVAL_DIR="$REPO/paper_eval_${GUARD_DIR##*/}"
+EVAL_DIR="$REPO/paper_eval_acdc_${GUARD_DIR##*/}"
 
 for f in "$STUDENT_CKPT" "$GUARDRAIL_CKPT"; do
   [ ! -f "$f" ] && echo "ERROR: $f missing" && exit 1
 done
 
-HF_HOME=/scratch/gautschi/manors/hf_cache \
-python -u src/eval/full_eval.py eval \
-  --run-id "guardrailpp_${MODEL}_cityscapes_val" \
-  --dataset-name cityscapes \
-  --dataset-path "$REPO/data/cityscapes" \
-  --split val \
-  --domain all \
-  --student-name student_skd \
-  --train-method skd \
-  --student-backbone "$MIT_STUDENT" \
-  --student-ckpt "$STUDENT_CKPT" \
-  --teacher-backbone "$TEACHER" \
-  --guardrail-ckpt "$GUARDRAIL_CKPT" \
-  --guardrail-student-name student_skd \
-  --mc-dropout-passes 4 \
-  --output-dir "$EVAL_DIR" \
-  --batch-size 4 \
-  --num-workers 4
+# ── Per-condition evals (fog, night, rain, snow) + all ──
+for DOMAIN in fog night rain snow all; do
+  echo "============================================"
+  echo "[ACDC] Evaluating domain=$DOMAIN"
+  echo "============================================"
 
-echo "[DONE] Cityscapes eval complete."
+  HF_HOME=/scratch/gautschi/manors/hf_cache \
+  python -u src/eval/full_eval.py eval \
+    --run-id "acdc_${MODEL}_skd_${DOMAIN}" \
+    --dataset-name acdc \
+    --dataset-path "$REPO/data/acdc" \
+    --split val \
+    --domain "$DOMAIN" \
+    --student-name student_skd \
+    --train-method skd \
+    --student-backbone "$MIT_STUDENT" \
+    --student-ckpt "$STUDENT_CKPT" \
+    --teacher-backbone "$TEACHER" \
+    --guardrail-ckpt "$GUARDRAIL_CKPT" \
+    --guardrail-student-name student_skd \
+    --mc-dropout-passes 4 \
+    --output-dir "$EVAL_DIR" \
+    --batch-size 4 \
+    --num-workers 4
+done
+
+echo "[DONE] ACDC eval complete."
 echo "  Student:   $STUDENT_CKPT"
 echo "  Guardrail: $GUARDRAIL_CKPT"
-echo "  Results:   $EVAL_DIR"
+echo "  Results:   $EVAL_DIR/csv/"
