@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=96
 #SBATCH --time=0:30:00
 #SBATCH -A lilly-rob1
-#SBATCH -p highmemn
+#SBATCH -p highmem
 #SBATCH -o /scratch/gautschi/manors/logs/gpp-5-eval-v4_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/gpp-5-eval-v4_%j.err
 

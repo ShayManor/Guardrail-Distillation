@@ -836,6 +836,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     student = build_student_model(cfg, args.student_ckpt)
     teacher = build_teacher_model(cfg)
     guardrail = build_guardrail_model(cfg, args.guardrail_ckpt)
+    guardrail_expects_feat = False
+    if guardrail is not None and args.guardrail_ckpt:
+        state = torch.load(args.guardrail_ckpt, map_location=cfg.device, weights_only=False)
+        enc_w = state["model"]["encoder.0.weight"] if "model" in state else state["encoder.0.weight"]
+        guardrail_expects_feat = (enc_w.shape[1] > cfg.num_classes)
 
     student_params = count_parameters(student)
     teacher_params = count_parameters(teacher) if teacher is not None else 0
@@ -948,12 +953,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     adapt_logits = adapt_out[0] if isinstance(adapt_out, tuple) else adapt_out
                 adapt_ms_img = t_adapt.ms / max(bsz, 1)
         if guardrail is not None and args.guardrail_student_name == args.student_name:
+            # Only pass features if guardrail was trained with them
+            _guard_feat = student_feat if guardrail_expects_feat else None
             with Timer(cfg.device) as t_guard:
                 try:
-                    guard_raw = guardrail(student_logits, student_feat)
+                    guard_raw = guardrail(student_logits, _guard_feat)
                 except TypeError:
                     guard_raw = guardrail(student_logits)
-            guard_ms_img = t_guard.ms / max(bsz, 1)
 
         # MC dropout forward (uncertainty only)
         mc_entropies: Optional[List[float]] = None
