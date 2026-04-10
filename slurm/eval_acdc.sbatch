@@ -29,7 +29,7 @@ TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segform
 # Auto-discover latest guardrail run for mit-${MODEL} (override with env vars)
 GUARD_DIR="${GUARD_DIR:-}"
 if [ -z "$GUARD_DIR" ]; then
-  GUARD_DIR=$(ls -td runs/mit-${MODEL}_guard_*/guardrail.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  GUARD_DIR=$(ls -td runs/mit-${MODEL}_guard_*/guardrail.ckpt outputs*/guardrail.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
   if [ -z "$GUARD_DIR" ]; then
     echo "ERROR: No guardrail run found for mit-${MODEL}. Run train_guardrail.sbatch first or set GUARD_DIR."
     exit 1
@@ -40,7 +40,7 @@ fi
 # Auto-discover latest SKD run for mit-${MODEL}
 SKD_DIR="${SKD_DIR:-}"
 if [ -z "$SKD_DIR" ]; then
-  SKD_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  SKD_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt outputs*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
   if [ -z "$SKD_DIR" ]; then
     echo "ERROR: No SKD run found for mit-${MODEL}. Run train_skd.sbatch first or set SKD_DIR."
     exit 1
