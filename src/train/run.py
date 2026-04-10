@@ -1,9 +1,11 @@
 import os
+import sys
 import argparse
 import datetime
 import torch
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from wandb_utils import setup_wandb, wandb_log, log_eval_results, finish_wandb
 
