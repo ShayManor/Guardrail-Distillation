@@ -46,6 +46,8 @@ class Config:
     margin_loss: str = "huber"
     corruption_prob: float = 0.5
     use_student_features: bool = False
+    composite_risk_weight: float = 0.0   # 0 = pure benefit target (default); >0 mixes student risk into utility target
+                                         # e.g. 0.8 → target = 0.2*benefit + 0.8*student_risk
 
     # ── Data ──
     crop_size: int = 512
