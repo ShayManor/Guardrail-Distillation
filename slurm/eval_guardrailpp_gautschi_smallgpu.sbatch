@@ -2,11 +2,10 @@
 #SBATCH --job-name=gpp-5-eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=96
 #SBATCH --time=0:30:00
 #SBATCH -A lilly-rob1
-#SBATCH -p smallgpu
-#SBATCH --gres=gpu:1
+#SBATCH -p highmemn
 #SBATCH -o /scratch/gautschi/manors/logs/gpp-5-eval-v3_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/gpp-5-eval-v3_%j.err
 
@@ -24,7 +23,7 @@ cd "$REPO"
 MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
-OUT=outputs-guardrailpp-v3
+OUT=outputs-guardrailpp-v4
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/eval/full_eval.py eval \
