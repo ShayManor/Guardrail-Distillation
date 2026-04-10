@@ -56,7 +56,7 @@ python -u src/train/run.py train \
   --guardrail-mode guardrailpp \
   --skip-sup --skip-kd --skip-skd \
   --epochs-guardrail 35 \
-  --batch-size 8 \
+  --batch-size 16 \
   --lr 5e-4 \
   --utility-loss-weight 1.0 \
   --margin-loss-weight 1.0 \

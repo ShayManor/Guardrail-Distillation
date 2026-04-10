@@ -47,7 +47,7 @@ python -u src/train/run.py train \
   --skip-kd \
   --skip-skd \
   --skip-guardrail \
-  --batch-size 8 \
+  --batch-size 16 \
   --lr 6e-5 \
   --log-every 20
 
