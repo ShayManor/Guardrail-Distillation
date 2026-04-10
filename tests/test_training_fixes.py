@@ -429,7 +429,60 @@ except Exception as e:
 
 # ========================================================================
 print("\n" + "=" * 60)
-print("TEST GROUP 8: CLI argument parsing")
+print("TEST GROUP 8: Composite risk weight target mixing")
+print("=" * 60)
+# ========================================================================
+
+# Test that composite_risk_weight=0 is identical to the default behavior
+cfg_no_mix = Config(
+    guardrail_mode="guardrailpp",
+    cf_delta=0.02,
+    cf_severities=(0.25, 0.5, 0.75, 1.0),
+    composite_risk_weight=0.0,
+)
+cfg_with_mix = Config(
+    guardrail_mode="guardrailpp",
+    cf_delta=0.02,
+    cf_severities=(0.25, 0.5, 0.75, 1.0),
+    composite_risk_weight=0.8,
+)
+
+with torch.no_grad():
+    targets_nomix = _build_guardrailpp_targets(
+        student, teacher, imgs, labels, cfg_no_mix,
+        student_logits=s_logits, teacher_logits=t_logits,
+    )
+    targets_withmix = _build_guardrailpp_targets(
+        student, teacher, imgs, labels, cfg_with_mix,
+        student_logits=s_logits, teacher_logits=t_logits,
+    )
+
+test("composite_risk_weight=0 matches default targets",
+     torch.allclose(targets_nomix["utility_target"], targets["utility_target"]),
+     "utility targets differ when composite_risk_weight=0")
+
+test("composite_risk_weight=0.8 produces different utility target",
+     not torch.allclose(targets_nomix["utility_target"], targets_withmix["utility_target"]),
+     "utility targets are identical despite mixing risk")
+
+test("composite mixed target is in [0,1]",
+     targets_withmix["utility_target"].min() >= 0 and targets_withmix["utility_target"].max() <= 1,
+     f"range [{targets_withmix['utility_target'].min():.3f}, {targets_withmix['utility_target'].max():.3f}]")
+
+test("composite_risk_weight default is 0.0 in Config",
+     Config().composite_risk_weight == 0.0,
+     f"got {Config().composite_risk_weight}")
+
+# Verify the mixed target is between pure benefit and pure risk
+# When w=0.8: target = 0.2*benefit + 0.8*risk, so it should be >= min(benefit, risk)
+test("margin targets unchanged by composite mixing",
+     torch.allclose(targets_nomix["margin_target"], targets_withmix["margin_target"]),
+     "margin targets should not be affected by composite_risk_weight")
+
+
+# ========================================================================
+print("\n" + "=" * 60)
+print("TEST GROUP 9: CLI argument parsing")
 print("=" * 60)
 # ========================================================================
 
@@ -477,6 +530,31 @@ try:
     test("CLI --use-student-features flag sets True",
          cfg_parsed2.use_student_features == True,
          f"got {cfg_parsed2.use_student_features}")
+
+    # Test --composite-risk-weight
+    _sys.argv = [
+        "run.py", "train",
+        "--dataset-path", "/tmp/test",
+        "--composite-risk-weight", "0.8",
+    ]
+    args3 = parse_args()
+    cfg_parsed3 = build_cfg(args3)
+
+    test("CLI --composite-risk-weight parses correctly",
+         cfg_parsed3.composite_risk_weight == 0.8,
+         f"got {cfg_parsed3.composite_risk_weight}")
+
+    # Test default (0.0)
+    _sys.argv = [
+        "run.py", "train",
+        "--dataset-path", "/tmp/test",
+    ]
+    args4 = parse_args()
+    cfg_parsed4 = build_cfg(args4)
+
+    test("CLI --composite-risk-weight defaults to 0.0",
+         cfg_parsed4.composite_risk_weight == 0.0,
+         f"got {cfg_parsed4.composite_risk_weight}")
 
     _sys.argv = old_argv
 

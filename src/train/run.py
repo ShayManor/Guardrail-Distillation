@@ -53,6 +53,9 @@ def parse_args():
     train_p.add_argument("--mc-dropout-passes",type=int,   default=0)
     train_p.add_argument("--corruption-prob",   type=float, default=0.5)
     train_p.add_argument("--use-student-features", action="store_true")
+    train_p.add_argument("--composite-risk-weight", type=float, default=0.0,
+        help="Mix student risk into utility target: 0=pure benefit (default), "
+             "0.8=20%% benefit + 80%% risk. Only affects guardrail stage.")
     train_p.add_argument("--skip-sup",         action="store_true")
     train_p.add_argument("--skip-kd",          action="store_true")
     train_p.add_argument("--skip-skd",         action="store_true")
@@ -119,6 +122,7 @@ def build_cfg(args):
         margin_loss=getattr(args, "margin_loss", "huber"),
         corruption_prob=getattr(args, "corruption_prob", 0.5),
         use_student_features=getattr(args, "use_student_features", False),
+        composite_risk_weight=getattr(args, "composite_risk_weight", 0.0),
         seed=getattr(args, "seed", 42),
     )
 

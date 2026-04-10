@@ -181,12 +181,22 @@ def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg,
         weights=(cfg.utility_w0, cfg.utility_w1, cfg.utility_w2),
     )
 
-    out = {"utility_target": utility_target.clamp(0.0, 1.0)}
     ignore = labels == IGNORE_INDEX
     safe = labels.clone()
     safe[ignore] = 0
     s_ce = F.cross_entropy(student_logits, safe, reduction="none")
     t_ce = F.cross_entropy(teacher_logits, safe, reduction="none")
+
+    # Optionally mix student risk into the utility target.
+    # composite_risk_weight=0 → pure benefit (default, unchanged behavior).
+    # composite_risk_weight=0.8 → target = 0.2*benefit + 0.8*student_risk.
+    crw = getattr(cfg, "composite_risk_weight", 0.0)
+    if crw > 0.0:
+        student_risk = _valid_mean(s_ce, ~ignore)
+        utility_target = (1.0 - crw) * utility_target.clamp(0, 1) + crw * student_risk.clamp(0, 1)
+
+    out = {"utility_target": utility_target.clamp(0.0, 1.0)}
+
     gap = (s_ce - t_ce).clamp(min=0)
     gap[ignore] = 0
     gap = gap.clamp(max=5.0) / 5.0
@@ -350,6 +360,9 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
                         ut = targets["utility_target"]
                         wb["guardrail/utility_target_mean"] = ut.mean().item()
                         wb["guardrail/utility_target_std"] = ut.std().item()
+                    crw = getattr(cfg, "composite_risk_weight", 0.0)
+                    if crw > 0:
+                        wb["guardrail/composite_risk_weight"] = crw
                     if "margin_target" in targets:
                         mt = targets["margin_target"]
                         wb["guardrail/margin_target_mean"] = mt.mean().item()
@@ -377,6 +390,7 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
                 "epoch": epoch,
                 "val_loss": val_loss,
                 "guardrail_mode": cfg.guardrail_mode,
+                "composite_risk_weight": getattr(cfg, "composite_risk_weight", 0.0),
             }, best_path)
             print(f"  → Saved guardrail: {best_path}")
 
