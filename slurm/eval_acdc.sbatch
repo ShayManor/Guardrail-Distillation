@@ -2,7 +2,7 @@
 #SBATCH --job-name=gpp-eval-acdc
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=96
 #SBATCH --time=04:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
@@ -20,25 +20,37 @@ export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
-MIT_B0=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--mit-b0/snapshots/*' -type d 2>/dev/null | head -n1)
+# ── Change MODEL to switch backbone (b0, b1, b2, …) ──
+MODEL=${MODEL:-b0}
+
+MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
-# Use whichever guardrail version is latest
-if [ -d outputs-guardrailpp-v5 ] && [ -f outputs-guardrailpp-v5/guardrail.ckpt ]; then
-  OUT=outputs-guardrailpp-v5
-elif [ -f outputs-guardrailpp-v4/guardrail.ckpt ]; then
-  OUT=outputs-guardrailpp-v4
-elif [ -f outputs-guardrailpp-v3/guardrail.ckpt ]; then
-  OUT=outputs-guardrailpp-v3
-elif [ -f outputs-guardrailpp-v2/guardrail.ckpt ]; then
-  OUT=outputs-guardrailpp-v2
-else
-  echo "ERROR: No guardrail checkpoint found"; exit 1
+# Auto-discover latest guardrail run for mit-${MODEL} (override with env vars)
+GUARD_DIR="${GUARD_DIR:-}"
+if [ -z "$GUARD_DIR" ]; then
+  GUARD_DIR=$(ls -td runs/mit-${MODEL}_guard_*/guardrail.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  if [ -z "$GUARD_DIR" ]; then
+    echo "ERROR: No guardrail run found for mit-${MODEL}. Run train_guardrail.sbatch first or set GUARD_DIR."
+    exit 1
+  fi
+  echo "[auto] Found latest guardrail run: $GUARD_DIR"
 fi
 
-STUDENT_CKPT="$OUT/student_skd.ckpt"
-GUARDRAIL_CKPT="$OUT/guardrail.ckpt"
-EVAL_DIR="$REPO/paper_eval_acdc"
+# Auto-discover latest SKD run for mit-${MODEL}
+SKD_DIR="${SKD_DIR:-}"
+if [ -z "$SKD_DIR" ]; then
+  SKD_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  if [ -z "$SKD_DIR" ]; then
+    echo "ERROR: No SKD run found for mit-${MODEL}. Run train_skd.sbatch first or set SKD_DIR."
+    exit 1
+  fi
+  echo "[auto] Found latest SKD run: $SKD_DIR"
+fi
+
+STUDENT_CKPT="$SKD_DIR/student_skd.ckpt"
+GUARDRAIL_CKPT="$GUARD_DIR/guardrail.ckpt"
+EVAL_DIR="$REPO/paper_eval_acdc_${GUARD_DIR##*/}"
 
 for f in "$STUDENT_CKPT" "$GUARDRAIL_CKPT"; do
   [ ! -f "$f" ] && echo "ERROR: $f missing" && exit 1
@@ -52,14 +64,14 @@ for DOMAIN in fog night rain snow all; do
 
   HF_HOME=/scratch/gautschi/manors/hf_cache \
   python -u src/eval/full_eval.py eval \
-    --run-id "acdc_b0_skd_${DOMAIN}" \
+    --run-id "acdc_${MODEL}_skd_${DOMAIN}" \
     --dataset-name acdc \
     --dataset-path "$REPO/data/acdc" \
     --split val \
     --domain "$DOMAIN" \
     --student-name student_skd \
     --train-method skd \
-    --student-backbone "$MIT_B0" \
+    --student-backbone "$MIT_STUDENT" \
     --student-ckpt "$STUDENT_CKPT" \
     --teacher-backbone "$TEACHER" \
     --guardrail-ckpt "$GUARDRAIL_CKPT" \
@@ -70,4 +82,7 @@ for DOMAIN in fog night rain snow all; do
     --num-workers 4
 done
 
-echo "[DONE] ACDC eval complete. CSVs in $EVAL_DIR/csv/"
+echo "[DONE] ACDC eval complete."
+echo "  Student:   $STUDENT_CKPT"
+echo "  Guardrail: $GUARDRAIL_CKPT"
+echo "  Results:   $EVAL_DIR/csv/"

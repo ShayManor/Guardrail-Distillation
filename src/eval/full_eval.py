@@ -701,6 +701,7 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     if guard_mode in ("utility", "margin", "guardrailpp"):
         model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
     else:
+        print(f"[guardrail] WARNING: using basic guardrail head")
         model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=guard_mode)
     model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
     return model.to(cfg.device).eval()
