@@ -65,7 +65,7 @@ python -u src/train/run.py train \
   --skip-sup \
   --skip-kd \
   --skip-guardrail \
-  --batch-size 8 \
+  --batch-size 16 \
   --lr 6e-5 \
   --alpha-kd 1.0 \
   --alpha-struct 0.5 \

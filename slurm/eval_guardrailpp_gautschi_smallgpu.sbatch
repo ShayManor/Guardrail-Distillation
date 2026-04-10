@@ -72,7 +72,7 @@ python -u src/eval/full_eval.py eval \
   --guardrail-student-name student_skd \
   --mc-dropout-passes 4 \
   --output-dir "$EVAL_DIR" \
-  --batch-size 2 \
+  --batch-size 4 \
   --num-workers 4
 
 echo "[DONE] Cityscapes eval complete."

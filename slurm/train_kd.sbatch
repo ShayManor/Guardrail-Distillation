@@ -65,7 +65,7 @@ python -u src/train/run.py train \
   --skip-sup \
   --skip-skd \
   --skip-guardrail \
-  --batch-size 8 \
+  --batch-size 16 \
   --lr 6e-5 \
   --kd-temperature 2.0 \
   --log-every 20
