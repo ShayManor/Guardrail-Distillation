@@ -34,7 +34,7 @@ TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segform
 # Auto-discover latest sup run for mit-${MODEL} (override: SRC_DIR=<path> sbatch ...)
 SRC_DIR="${SRC_DIR:-}"
 if [ -z "$SRC_DIR" ]; then
-  SRC_DIR=$(ls -td runs/mit-${MODEL}_sup_*/student_sup.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  SRC_DIR=$(ls -td runs/mit-${MODEL}_sup_*/student_sup.ckpt outputs*/student_sup.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
   if [ -z "$SRC_DIR" ]; then
     echo "ERROR: No sup run found for mit-${MODEL}. Run train_sup.sbatch first or set SRC_DIR."
     exit 1

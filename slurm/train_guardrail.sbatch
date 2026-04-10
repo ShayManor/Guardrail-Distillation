@@ -30,7 +30,7 @@ TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segform
 # Auto-discover latest SKD run for mit-${MODEL} (override: SRC_DIR=<path> sbatch ...)
 SRC_DIR="${SRC_DIR:-}"
 if [ -z "$SRC_DIR" ]; then
-  SRC_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  SRC_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt outputs*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
   if [ -z "$SRC_DIR" ]; then
     echo "ERROR: No SKD run found for mit-${MODEL}. Run train_skd.sbatch first or set SRC_DIR."
     exit 1
