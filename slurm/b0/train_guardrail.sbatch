@@ -50,6 +50,7 @@ python -u src/train/run.py train \
   --lr 5e-4 \
   --utility-loss-weight 1.0 \
   --margin-loss-weight 1.0 \
+  --composite-risk-weight 0.7 \
   --cf-delta 0.02 \
   --cf-severities 0.25,0.5,0.75,1.0 \
   --corruption-prob 0.5 \
