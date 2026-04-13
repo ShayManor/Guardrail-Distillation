@@ -45,9 +45,14 @@ class Config:
     family_loss_weight: float = 0.0
     margin_loss: str = "huber"
     corruption_prob: float = 0.5
-    use_student_features: bool = False
+    use_student_features: bool = True
     composite_risk_weight: float = 0.0   # 0 = pure benefit target (default); >0 mixes student risk into utility target
                                          # e.g. 0.8 → target = 0.2*benefit + 0.8*student_risk
+    # Dense supervision (new default path). Legacy scalar-benefit training is
+    # still reproducible via supervision_type='scalar_benefit'.
+    supervision_type: str = "dense_multi"   # scalar_benefit | dense_disagree | dense_gap | dense_multi
+    dense_disagree_weight: float = 1.0
+    dense_gap_weight: float = 1.0
 
     # ── Data ──
     crop_size: int = 512

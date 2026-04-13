@@ -694,16 +694,24 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
 
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
     guard_mode = state.get("guardrail_mode", "gap") if isinstance(state, dict) else "gap"
-    enc_weight = state["model"]["encoder.0.weight"] if isinstance(state, dict) and "model" in state else state[
-        "encoder.0.weight"]
+    state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
+    enc_weight = state_dict["encoder.0.weight"]
     feat_ch = enc_weight.shape[1] - cfg.num_classes
-    print(f"[guardrail] Inferred feat_channels={feat_ch} from checkpoint")
+    has_dense = "disagree_head.weight" in state_dict
+    print(
+        f"[guardrail] Inferred feat_channels={feat_ch} dense_heads={has_dense} from checkpoint"
+    )
     if guard_mode in ("utility", "margin", "guardrailpp"):
-        model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
+        model = GuardrailPlusHead(
+            num_classes=cfg.num_classes,
+            feat_channels=feat_ch,
+            num_families=4,
+            use_dense_heads=has_dense,
+        )
     else:
         print(f"[guardrail] WARNING: using basic guardrail head")
         model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=guard_mode)
-    model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
+    model.load_state_dict(state_dict)
     return model.to(cfg.device).eval()
 
 
@@ -1116,6 +1124,33 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                             row["guardrail_heatmap_mean"] = float(hm_valid.mean().item())
                             row["guardrail_heatmap_std"] = float(hm_valid.std().item()) if hm_valid.numel() > 1 else 0.0
                             row["guardrail_heatmap_max"] = float(hm_valid.max().item())
+                    # Dense-head utilities (new default training regime).
+                    if "disagree_logits" in guard_raw:
+                        dl = guard_raw["disagree_logits"][i]
+                        if dl.ndim == 2 and dl.shape == gt.shape:
+                            dl_valid = torch.sigmoid(dl[valid])
+                        else:
+                            dl_valid = torch.sigmoid(dl.flatten())
+                        if dl_valid.numel() > 0:
+                            util_bce = float(dl_valid.mean().item())
+                            row["guardrailpp_utility_dense_bce"] = util_bce
+                            row["guardrailpp_keep_dense_bce"] = 1.0 - util_bce
+                    if "gap_pred" in guard_raw:
+                        gp = guard_raw["gap_pred"][i]
+                        if gp.ndim == 2 and gp.shape == gt.shape:
+                            gp_valid = gp[valid]
+                        else:
+                            gp_valid = gp.flatten()
+                        if gp_valid.numel() > 0:
+                            util_gap_raw = float(gp_valid.mean().item())
+                            row["guardrailpp_utility_dense_gap_raw"] = util_gap_raw
+                            # Squash to [0,1] via sigmoid so it can share the
+                            # keep/defer plumbing with other scores.
+                            util_gap = float(torch.sigmoid(
+                                torch.tensor(util_gap_raw)
+                            ).item())
+                            row["guardrailpp_utility_dense_gap"] = util_gap
+                            row["guardrailpp_keep_dense_gap"] = 1.0 - util_gap
                 elif torch.is_tensor(guard_raw):
                     row["guardrail_risk"] = float(guard_raw[i].item())
                     row["guardrail_keep"] = 1.0 - row["guardrail_risk"]

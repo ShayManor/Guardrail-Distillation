@@ -131,6 +131,36 @@ def _teacher_benefit(student_logits, teacher_logits, labels):
     return benefit, student_ce, teacher_ce
 
 
+def _teacher_disagreement_map(student_logits, teacher_logits, labels):
+    """Per-pixel binary mask: 1 where teacher and student argmax disagree.
+
+    Returns:
+        disagree: float tensor (B, H, W), 1.0 where argmax differs, 0.0 else.
+        valid:    float tensor (B, H, W), 1.0 where label != IGNORE_INDEX.
+    """
+    student_pred = student_logits.argmax(dim=1)
+    teacher_pred = teacher_logits.argmax(dim=1)
+    disagree = (student_pred != teacher_pred).float()
+    valid = (labels != IGNORE_INDEX).float()
+    return disagree, valid
+
+
+def _teacher_risk_gap_map(student_logits, teacher_logits, labels):
+    """Per-pixel signed risk gap: student_ce - teacher_ce (no clamp).
+
+    Positive values mean the teacher is locally better; negative values mean
+    the student is locally better. Used as a smooth_l1 regression target.
+    """
+    ignore = labels == IGNORE_INDEX
+    safe = labels.clone()
+    safe[ignore] = 0
+    student_ce = F.cross_entropy(student_logits, safe, reduction="none")
+    teacher_ce = F.cross_entropy(teacher_logits, safe, reduction="none")
+    gap = student_ce - teacher_ce
+    valid = (~ignore).float()
+    return gap, valid
+
+
 def _teacher_benefit_weighted(student_logits, teacher_logits, labels, weights):
     w0, w1, w2 = weights
     benefit, student_ce, teacher_ce = _teacher_benefit(student_logits, teacher_logits, labels)
@@ -202,6 +232,21 @@ def _build_guardrailpp_targets(student, teacher, imgs, labels, cfg,
     gap = gap.clamp(max=5.0) / 5.0
     out["gap_map"] = gap
 
+    # Dense supervision targets (used by supervision_type in {dense_disagree,
+    # dense_gap, dense_multi}). Cheap to compute unconditionally; the loss
+    # selects which ones to apply based on the active supervision_type.
+    disagree_target, dense_valid = _teacher_disagreement_map(
+        student_logits, teacher_logits, labels
+    )
+    gap_signed, _ = _teacher_risk_gap_map(student_logits, teacher_logits, labels)
+    # Zero-out ignored pixels so the masked loss is well-defined even if a
+    # consumer forgets to apply the valid mask.
+    gap_signed = gap_signed * dense_valid
+    out["disagree_target"] = disagree_target
+    out["disagree_valid"] = dense_valid
+    out["gap_target"] = gap_signed
+    out["gap_valid"] = dense_valid
+
     if cfg.guardrail_mode in ("margin", "guardrailpp"):
         families = ["underexposure", "motion_blur", "noise", "fog"]
         severity_grid = cfg.cf_severities
@@ -265,6 +310,9 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
             margin_weight=cfg.margin_loss_weight,
             family_weight=cfg.family_loss_weight,
             margin_loss=cfg.margin_loss,
+            supervision_type=getattr(cfg, "supervision_type", "dense_multi"),
+            dense_disagree_weight=getattr(cfg, "dense_disagree_weight", 1.0),
+            dense_gap_weight=getattr(cfg, "dense_gap_weight", 1.0),
         )
     else:
         criterion = GuardrailLoss(mode=cfg.guardrail_mode)
@@ -374,6 +422,22 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
                     if "margin_vec" in preds:
                         mp = preds["margin_vec"]
                         wb["guardrail/margin_pred_mean"] = mp.mean().item()
+                    if "disagree_target" in targets:
+                        dt = targets["disagree_target"]
+                        dv = targets.get("disagree_valid", torch.ones_like(dt))
+                        denom = dv.sum().clamp(min=1.0)
+                        wb["guardrail/disagree_target_rate"] = float(
+                            (dt * dv).sum().item() / denom.item()
+                        )
+                    if "disagree_logits" in preds:
+                        dl = preds["disagree_logits"]
+                        wb["guardrail/disagree_pred_mean"] = float(
+                            torch.sigmoid(dl).mean().item()
+                        )
+                    if "gap_pred" in preds:
+                        gp = preds["gap_pred"]
+                        wb["guardrail/gap_pred_mean"] = float(gp.mean().item())
+                        wb["guardrail/gap_pred_std"] = float(gp.std().item())
 
                 wandb_log(wb, step=global_step)
                 log_system_metrics(global_step)
@@ -391,6 +455,8 @@ def train_guardrail(guardrail, student, teacher, train_loader, val_loader, cfg,
                 "val_loss": val_loss,
                 "guardrail_mode": cfg.guardrail_mode,
                 "composite_risk_weight": getattr(cfg, "composite_risk_weight", 0.0),
+                "supervision_type": getattr(cfg, "supervision_type", "dense_multi"),
+                "use_student_features": bool(use_student_features),
             }, best_path)
             print(f"  → Saved guardrail: {best_path}")
 
@@ -458,6 +524,9 @@ def _eval_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_fe
             margin_weight=cfg.margin_loss_weight,
             family_weight=cfg.family_loss_weight,
             margin_loss=cfg.margin_loss,
+            supervision_type=getattr(cfg, "supervision_type", "dense_multi"),
+            dense_disagree_weight=getattr(cfg, "dense_disagree_weight", 1.0),
+            dense_gap_weight=getattr(cfg, "dense_gap_weight", 1.0),
         )
     else:
         criterion = GuardrailLoss(mode=cfg.guardrail_mode)
