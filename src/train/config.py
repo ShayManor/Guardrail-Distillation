@@ -1,6 +1,6 @@
 """Central configuration for the guardrail distillation pipeline."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -25,34 +25,22 @@ class Config:
     lr_scheduler: str = "cosine"      # cosine | step | poly
     warmup_epochs: int = 5
 
-    # ── Loss weights ──
+    # ── Distillation loss weights (stages 1-3) ──
     alpha_ce: float = 1.0             # supervised CE weight
     alpha_dice: float = 0.5           # Dice loss weight
     alpha_kd: float = 1.0             # KL distillation weight
     alpha_struct: float = 0.5         # structural/affinity loss weight
     kd_temperature: float = 4.0       # softmax temperature for KD
 
-    # ── Guardrail ──
-    guardrail_mode: str = "gap"       # gap | binary | both | utility | margin | guardrailpp
-    guardrail_threshold: float = 0.5  # risk score threshold for flagging
-    utility_w0: float = 0.5
-    utility_w1: float = 0.25
-    utility_w2: float = 0.25
-    cf_delta: float = 0.02
-    cf_severities: tuple = field(default_factory=lambda: (0.25, 0.5, 0.75, 1.0))
-    utility_loss_weight: float = 1.0
-    margin_loss_weight: float = 1.0
-    family_loss_weight: float = 0.0
-    margin_loss: str = "huber"
-    corruption_prob: float = 0.5
-    use_student_features: bool = True
-    composite_risk_weight: float = 0.0   # 0 = pure benefit target (default); >0 mixes student risk into utility target
-                                         # e.g. 0.8 → target = 0.2*benefit + 0.8*student_risk
-    # Dense supervision (new default path). Legacy scalar-benefit training is
-    # still reproducible via supervision_type='scalar_benefit'.
+    # ── Guardrail++ head (stage 4) ──
+    # Primary method (paper): dense per-pixel supervision. The scalar_benefit
+    # path is retained for ablations only.
     supervision_type: str = "dense_multi"   # scalar_benefit | dense_disagree | dense_gap | dense_multi
     dense_disagree_weight: float = 1.0
     dense_gap_weight: float = 1.0
+    scalar_benefit_weight: float = 1.0
+    use_student_features: bool = True       # feed student backbone features into the head
+    corruption_prob: float = 0.5            # fraction of training batches that get online corruption
 
     # ── Data ──
     crop_size: int = 512
@@ -64,5 +52,5 @@ class Config:
     device: str = "cuda"
     fp16: bool = True
     log_every: int = 50
-    eval_every: int = 1               # eval every N epochs
+    eval_every: int = 1
     resume: Optional[str] = None

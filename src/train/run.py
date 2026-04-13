@@ -1,3 +1,16 @@
+"""Top-level training/eval CLI for the Guardrail-Distillation pipeline.
+
+Four training stages:
+    1. student_sup   - supervised segmentation training
+    2. student_kd    - knowledge distillation from teacher soft logits
+    3. student_skd   - structured KD (KD + pairwise-affinity)
+    4. guardrail     - Guardrail++ head on frozen student + teacher
+
+At the end of training (or in ``eval`` mode) the authoritative evaluation is
+done via ``src/eval/full_eval.py``; this script only runs a lightweight
+sanity-eval pass with ``src.eval.eval.run_eval`` for quick per-image stats.
+"""
+
 import os
 import argparse
 import datetime
@@ -12,20 +25,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Guardrail Distillation Pipeline")
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
-    # ── Shared args ────────────────────────────────────────────────────────────
+    # ── Shared args ────────────────────────────────────────────────────────
     shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("--dataset-path",   default="/root/Guardrail-Distillation/data/cityscapes")
-    shared.add_argument("--output-dir",     default=None,
+    shared.add_argument("--dataset-path",  default="/root/Guardrail-Distillation/data/cityscapes")
+    shared.add_argument("--output-dir",    default=None,
         help="Output directory. Auto-generated with timestamp if not set in train mode.")
-    shared.add_argument("--num-classes",    type=int,   default=19)
-    shared.add_argument("--device",         default="cuda" if torch.cuda.is_available() else "cpu")
-    shared.add_argument("--num-workers",    type=int,   default=0)
-    shared.add_argument("--batch-size",     type=int,   default=10)
-    shared.add_argument("--teacher-model",  default="nvidia/segformer-b5-finetuned-cityscapes-1024-1024")
-    shared.add_argument("--student-model",  default="nvidia/mit-b0")
+    shared.add_argument("--num-classes",   type=int, default=19)
+    shared.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
+    shared.add_argument("--num-workers",   type=int, default=0)
+    shared.add_argument("--batch-size",    type=int, default=10)
+    shared.add_argument("--teacher-model", default="nvidia/segformer-b5-finetuned-cityscapes-1024-1024")
+    shared.add_argument("--student-model", default="nvidia/mit-b0")
 
-    # ── Train mode ─────────────────────────────────────────────────────────────
-    train_p = subparsers.add_parser("train", parents=[shared], help="Run training pipeline then eval")
+    # ── Train mode ─────────────────────────────────────────────────────────
+    train_p = subparsers.add_parser("train", parents=[shared], help="Run training pipeline")
     train_p.add_argument("--epochs-sup",       type=int,   default=10)
     train_p.add_argument("--epochs-kd",        type=int,   default=10)
     train_p.add_argument("--epochs-skd",       type=int,   default=10)
@@ -36,85 +49,52 @@ def parse_args():
     train_p.add_argument("--alpha-struct",     type=float, default=0.5)
     train_p.add_argument("--kd-temperature",   type=float, default=2.0)
     train_p.add_argument("--log-every",        type=int,   default=50)
-    train_p.add_argument(
-        "--guardrail-mode",
-        default="utility",
-        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp"],
-    )
-    train_p.add_argument("--utility-w0",       type=float, default=0.5)
-    train_p.add_argument("--utility-w1",       type=float, default=0.25)
-    train_p.add_argument("--utility-w2",       type=float, default=0.25)
-    train_p.add_argument("--cf-delta",         type=float, default=0.02)
-    train_p.add_argument("--cf-severities",    default="0.25,0.5,0.75,1.0")
-    train_p.add_argument("--utility-loss-weight", type=float, default=1.0)
-    train_p.add_argument("--margin-loss-weight",  type=float, default=1.0)
-    train_p.add_argument("--family-loss-weight",  type=float, default=0.0)
-    train_p.add_argument("--margin-loss",      default="huber", choices=["huber", "mse"])
-    train_p.add_argument("--mc-dropout-passes",type=int,   default=0)
-    train_p.add_argument("--corruption-prob",   type=float, default=0.5)
-    train_p.add_argument(
-        "--use-student-features",
-        dest="use_student_features",
-        action="store_true",
-        default=True,
-        help="Feed student backbone features into the guardrail head (default: on).",
-    )
-    train_p.add_argument(
-        "--no-student-features",
-        dest="use_student_features",
-        action="store_false",
-        help="Disable student feature input; logits-only guardrail (legacy).",
-    )
-    train_p.add_argument(
-        "--supervision-type",
-        default="dense_multi",
+    train_p.add_argument("--corruption-prob",  type=float, default=0.5,
+        help="Probability of applying online corruption augmentation during guardrail training.")
+    train_p.add_argument("--supervision-type", default="dense_multi",
         choices=["scalar_benefit", "dense_disagree", "dense_gap", "dense_multi"],
-        help="Guardrail supervision target. 'dense_multi' trains both dense "
-             "heads (disagreement + signed risk-gap); 'scalar_benefit' is the "
-             "legacy image-level utility path.",
-    )
+        help="Guardrail supervision target. 'dense_multi' (default) trains both dense "
+             "heads; the other three are for ablations.")
     train_p.add_argument("--dense-disagree-weight", type=float, default=1.0)
     train_p.add_argument("--dense-gap-weight",      type=float, default=1.0)
-    train_p.add_argument("--composite-risk-weight", type=float, default=0.0,
-        help="Mix student risk into utility target: 0=pure benefit (default), "
-             "0.8=20%% benefit + 80%% risk. Only affects guardrail stage.")
-    train_p.add_argument("--skip-sup",         action="store_true")
-    train_p.add_argument("--skip-kd",          action="store_true")
-    train_p.add_argument("--skip-skd",         action="store_true")
-    train_p.add_argument("--skip-guardrail",   action="store_true")
+    train_p.add_argument("--scalar-benefit-weight", type=float, default=1.0,
+        help="Weight of the scalar utility regression (only used when "
+             "supervision_type=scalar_benefit).")
+    train_p.add_argument("--use-student-features", dest="use_student_features",
+        action="store_true", default=True,
+        help="Feed student backbone features into the guardrail head (default: on).")
+    train_p.add_argument("--no-student-features", dest="use_student_features",
+        action="store_false",
+        help="Disable student feature input (logits-only guardrail).")
+    train_p.add_argument("--skip-sup",       action="store_true")
+    train_p.add_argument("--skip-kd",        action="store_true")
+    train_p.add_argument("--skip-skd",       action="store_true")
+    train_p.add_argument("--skip-guardrail", action="store_true")
 
     # wandb
-    train_p.add_argument("--wandb-project",    default="guardrail-distillation")
-    train_p.add_argument("--wandb-group",      default=None)
-    train_p.add_argument("--wandb-name",       default=None)
-    train_p.add_argument("--no-wandb",         action="store_true", help="Disable wandb logging")
-    train_p.add_argument("--seed",             type=int, default=42)
-    train_p.add_argument("--checkpoint-dir",   default=None,
-        help="Load checkpoints from this dir when using --skip-* flags. Defaults to --output-dir.")
+    train_p.add_argument("--wandb-project", default="guardrail-distillation")
+    train_p.add_argument("--wandb-group",   default=None)
+    train_p.add_argument("--wandb-name",    default=None)
+    train_p.add_argument("--no-wandb",      action="store_true", help="Disable wandb logging")
+    train_p.add_argument("--seed",          type=int, default=42)
+    train_p.add_argument("--checkpoint-dir", default=None,
+        help="Load initial checkpoints from this dir when using --skip-* flags. "
+             "Defaults to --output-dir.")
 
-    # ── Eval mode ──────────────────────────────────────────────────────────────
-    eval_p = subparsers.add_parser("eval", parents=[shared], help="Run eval from existing checkpoints")
-    eval_p.add_argument(
-        "--guardrail-mode",
-        default="utility",
-        choices=["gap", "binary", "both", "utility", "margin", "guardrailpp"],
-    )
-    eval_p.add_argument("--mc-dropout-passes", type=int, default=0)
-    eval_p.add_argument(
-        "--checkpoints",
-        nargs="+",
-        metavar="NAME:PATH",
+    # ── Eval mode ──────────────────────────────────────────────────────────
+    eval_p = subparsers.add_parser("eval", parents=[shared],
+        help="Quick sanity eval of stage checkpoints. For the authoritative "
+             "evaluation (ACDC / Cityscapes) use src/eval/full_eval.py.")
+    eval_p.add_argument("--seed", type=int, default=42)
+    eval_p.add_argument("--checkpoints", nargs="+", metavar="NAME:PATH",
         help="Override checkpoint paths, e.g. student_sup:outputs/student_sup.ckpt",
-        default=None,
-    )
+        default=None)
 
     return parser.parse_args()
 
 
 def build_cfg(args):
     from config import Config
-    mode = getattr(args, "guardrail_mode", "utility")
-    cf_severities = tuple(float(x.strip()) for x in getattr(args, "cf_severities", "0.25,0.5,0.75,1.0").split(",") if x.strip())
     return Config(
         dataset_path=args.dataset_path,
         num_classes=args.num_classes,
@@ -132,22 +112,12 @@ def build_cfg(args):
         num_workers=args.num_workers,
         output_dir=args.output_dir,
         device=args.device,
-        guardrail_mode=mode,
-        utility_w0=getattr(args, "utility_w0", 0.5),
-        utility_w1=getattr(args, "utility_w1", 0.25),
-        utility_w2=getattr(args, "utility_w2", 0.25),
-        cf_delta=getattr(args, "cf_delta", 0.02),
-        cf_severities=cf_severities,
-        utility_loss_weight=getattr(args, "utility_loss_weight", 1.0),
-        margin_loss_weight=getattr(args, "margin_loss_weight", 1.0),
-        family_loss_weight=getattr(args, "family_loss_weight", 0.0),
-        margin_loss=getattr(args, "margin_loss", "huber"),
         corruption_prob=getattr(args, "corruption_prob", 0.5),
-        use_student_features=getattr(args, "use_student_features", True),
-        composite_risk_weight=getattr(args, "composite_risk_weight", 0.0),
         supervision_type=getattr(args, "supervision_type", "dense_multi"),
         dense_disagree_weight=getattr(args, "dense_disagree_weight", 1.0),
         dense_gap_weight=getattr(args, "dense_gap_weight", 1.0),
+        scalar_benefit_weight=getattr(args, "scalar_benefit_weight", 1.0),
+        use_student_features=getattr(args, "use_student_features", True),
         seed=getattr(args, "seed", 42),
     )
 
@@ -156,7 +126,9 @@ def make_fresh_student(args, cfg):
     from transformers import AutoModelForSemanticSegmentation, SegformerForSemanticSegmentation, SegformerConfig
     from models import HFSegModelWrapper
 
-    backbone = AutoModelForSemanticSegmentation.from_pretrained(args.student_model, local_files_only=True)
+    backbone = AutoModelForSemanticSegmentation.from_pretrained(
+        args.student_model, local_files_only=True
+    )
     config = SegformerConfig.from_pretrained(args.student_model, local_files_only=True)
     config.num_labels = cfg.num_classes
     model = SegformerForSemanticSegmentation(config)
@@ -168,7 +140,9 @@ def load_teacher(args, cfg):
     from transformers import AutoModelForSemanticSegmentation
     from models import HFSegModelWrapper
 
-    raw = AutoModelForSemanticSegmentation.from_pretrained(args.teacher_model, local_files_only=True)
+    raw = AutoModelForSemanticSegmentation.from_pretrained(
+        args.teacher_model, local_files_only=True
+    )
     return HFSegModelWrapper(raw, cfg.num_classes).to(cfg.device).eval()
 
 
@@ -181,23 +155,19 @@ def default_checkpoints(output_dir):
     }
 
 
-def run_eval_pipeline(args, cfg, checkpoint_map):
-    from models import GuardrailHead, GuardrailPlusHead
-    from utils import load_checkpoint
+def run_sanity_eval(args, cfg, checkpoint_map):
+    """Quick per-image eval of the stage checkpoints that exist.
+
+    This is NOT the authoritative paper evaluation — for that use
+    ``src/eval/full_eval.py``, which runs the full ACDC/Cityscapes matrix and
+    emits the CSVs in ``src/analysis/``.
+    """
     from src.eval.eval import run_eval
     from src.eval.data import CITYSCAPES_LABELID_TO_TRAINID
     from src.eval.analysis import plot_results
-    from src.train.eval_guardrail import run_benchmark
-    from data import build_dataloaders
-
-    eval_cfg = build_cfg(args)
-    eval_cfg.num_workers = 0
-    _, val_loader = build_dataloaders(eval_cfg)
-    teacher = load_teacher(args, cfg)
 
     results_dir = os.path.join(args.output_dir, "results")
     figures_dir = os.path.join(results_dir, "figures")
-    benchmark_dir = os.path.join(results_dir, "benchmark")
     os.makedirs(results_dir, exist_ok=True)
 
     all_csvs = []
@@ -223,54 +193,11 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
 
     if all_csvs:
         plot_results(all_csvs, save_dir=figures_dir)
-
-    # Benchmark
-    students = {}
-    for name, ckpt_path in checkpoint_map.items():
-        if name == "guardrail":
-            continue
-        if os.path.exists(ckpt_path):
-            model = make_fresh_student(args, cfg)
-            load_checkpoint(model, ckpt_path, device=cfg.device)
-            students[name] = model
-
-    guardrail_ckpt = checkpoint_map.get("guardrail", "")
-    if os.path.exists(guardrail_ckpt):
-        guard_state = torch.load(guardrail_ckpt, map_location=cfg.device, weights_only=False)
-        # Infer feat_channels from saved encoder weight shape
-        enc_weight = guard_state["model"]["encoder.0.weight"]
-        feat_ch = enc_weight.shape[1] - cfg.num_classes  # total_in - logit_channels
-        has_dense = "disagree_head.weight" in guard_state["model"]
-        print(f"[Eval] Guardrail feat_channels={feat_ch} dense_heads={has_dense}")
-        if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
-            guardrail_head = GuardrailPlusHead(
-                num_classes=cfg.num_classes,
-                feat_channels=feat_ch,
-                num_families=4,
-                use_dense_heads=has_dense,
-            )
-        else:
-            guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=cfg.guardrail_mode)
-        guardrail_head.load_state_dict(guard_state["model"])
-
-        run_benchmark(
-            students=students,
-            val_loader=val_loader,
-            num_classes=cfg.num_classes,
-            device=cfg.device,
-            teacher=teacher,
-            guardrail=guardrail_head,
-            guardrail_student_name="student_skd",
-            mc_dropout_passes=args.mc_dropout_passes,
-            save_dir=benchmark_dir,
-            use_student_features=(feat_ch > 0),
-        )
-    else:
-        print("[Eval] Guardrail checkpoint not found, skipping benchmark.")
+    print("[Eval] Sanity eval complete. For paper numbers use src/eval/full_eval.py.")
 
 
 def run_train_pipeline(args, cfg):
-    from models import GuardrailHead, GuardrailPlusHead
+    from models import GuardrailPlusHead
     from utils import load_checkpoint
     from data import build_dataloaders
     from train_supervised import train_supervised
@@ -290,7 +217,8 @@ def run_train_pipeline(args, cfg):
 
     if not args.skip_sup:
         ckpts["student_sup"], global_step = train_supervised(
-            fresh(), train_loader, val_loader, cfg, global_step=global_step)
+            fresh(), train_loader, val_loader, cfg, global_step=global_step
+        )
 
     if not args.skip_kd:
         print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
@@ -299,7 +227,8 @@ def run_train_pipeline(args, cfg):
         student_kd = fresh()
         load_checkpoint(student_kd, ckpts["student_sup"], device=cfg_kd.device)
         ckpts["student_kd"], global_step = train_kd(
-            student_kd, teacher, train_loader, val_loader, cfg_kd, global_step=global_step)
+            student_kd, teacher, train_loader, val_loader, cfg_kd, global_step=global_step
+        )
 
     if not args.skip_skd:
         cfg_skd = build_cfg(args)
@@ -307,14 +236,14 @@ def run_train_pipeline(args, cfg):
         student_skd = fresh()
         load_checkpoint(student_skd, ckpts["student_sup"], device=cfg_skd.device)
         ckpts["student_skd"], global_step = train_skd(
-            student_skd, teacher, train_loader, val_loader, cfg_skd, global_step=global_step)
+            student_skd, teacher, train_loader, val_loader, cfg_skd, global_step=global_step
+        )
 
     if not args.skip_guardrail:
         best_student = fresh()
         load_checkpoint(best_student, ckpts["student_skd"], device=cfg.device)
         best_student.to(cfg.device).eval()
 
-        # Probe feature dim (only used if --use-student-features is set)
         feat_ch = 0
         if cfg.use_student_features:
             with torch.no_grad():
@@ -323,15 +252,13 @@ def run_train_pipeline(args, cfg):
                 feat_ch = feat.shape[1]
                 print(f"  [Guard] Student feature channels: {feat_ch}")
         else:
-            print(f"  [Guard] Logits-only mode (feat_channels=0)")
+            print("  [Guard] Logits-only mode (feat_channels=0)")
 
-        if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
-            guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
-        else:
-            guardrail = GuardrailHead(num_classes=cfg.num_classes, feat_channels=0, mode=cfg.guardrail_mode)
+        guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch)
         _, global_step = train_guardrail(
             guardrail, best_student, teacher, train_loader, val_loader, cfg,
-            use_student_features=cfg.use_student_features, global_step=global_step)
+            use_student_features=cfg.use_student_features, global_step=global_step,
+        )
         ckpts["guardrail"] = os.path.join(cfg.output_dir, "guardrail.ckpt")
 
     return ckpts
@@ -340,14 +267,13 @@ def run_train_pipeline(args, cfg):
 def main():
     args = parse_args()
 
-    # Auto-generate unique output directory for training if not specified
     if args.output_dir is None:
         if args.mode == "train":
             student_short = args.student_model.split("/")[-1]
-            mode = getattr(args, "guardrail_mode", "utility")
+            supervision = getattr(args, "supervision_type", "dense_multi")
             seed = getattr(args, "seed", 42)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            parts = [student_short, mode, f"s{seed}"]
+            parts = [student_short, supervision, f"s{seed}"]
             slurm_job = os.environ.get("SLURM_JOB_ID")
             if slurm_job:
                 parts.append(f"j{slurm_job}")
@@ -364,7 +290,7 @@ def main():
     if args.mode == "train":
         setup_wandb(cfg, args)
         ckpts = run_train_pipeline(args, cfg)
-        run_eval_pipeline(args, cfg, ckpts)
+        run_sanity_eval(args, cfg, ckpts)
         finish_wandb()
 
     elif args.mode == "eval":
@@ -375,7 +301,7 @@ def main():
                 ckpts[name] = path
         else:
             ckpts = default_checkpoints(args.output_dir)
-        run_eval_pipeline(args, cfg, ckpts)
+        run_sanity_eval(args, cfg, ckpts)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Model definitions: teacher, student, and guardrail head."""
+"""Model definitions: teacher, student, and the Guardrail++ head."""
 
 import torch
 import torch.nn as nn
@@ -22,7 +22,6 @@ class SegModel(nn.Module):
         super().__init__()
         self.backbone = base_model.backbone
         self.classifier = base_model.classifier
-        # Replace final conv if num_classes differs
         last_conv = self.classifier[-1]
         if last_conv.out_channels != num_classes:
             self.classifier[-1] = nn.Conv2d(
@@ -32,7 +31,7 @@ class SegModel(nn.Module):
     def forward(self, x, return_features=False):
         input_shape = x.shape[-2:]
         features = self.backbone(x)
-        feat = features["out"]  # backbone output features
+        feat = features["out"]
         logits = self.classifier(feat)
         logits = F.interpolate(logits, size=input_shape, mode="bilinear", align_corners=False)
 
@@ -53,13 +52,13 @@ def build_teacher(arch="resnet101", num_classes=19, pretrained=True):
         raise ValueError(f"Unknown teacher arch: {arch}")
     return SegModel(base, num_classes)
 
+
 class HFSegModelWrapper(nn.Module):
     """Wraps a HuggingFace segmentation model to match our interface."""
 
     def __init__(self, hf_model, num_classes=19):
         super().__init__()
         self.model = hf_model
-        # Probe output channels and add projection if needed
         self.proj = None  # set lazily
 
     def forward(self, x, return_features=False):
@@ -78,11 +77,10 @@ class HFSegModelWrapper(nn.Module):
             return logits, feat
         return logits
 
+
 def build_student(arch="mobilenet", num_classes=19, pretrained=True):
     """Build student segmentation model."""
     if arch.startswith("hf://") or "/" in arch:
-        # Load from HuggingFace
-        import segmentation_models_pytorch as smp
         from transformers import AutoModelForSemanticSegmentation
         try:
             base = AutoModelForSemanticSegmentation.from_pretrained(arch)
@@ -96,8 +94,6 @@ def build_student(arch="mobilenet", num_classes=19, pretrained=True):
         weights = DeepLabV3_ResNet50_Weights.DEFAULT if pretrained else None
         base = deeplabv3_resnet50(weights=weights)
     elif arch == "resnet18":
-        # No built-in DeepLabV3+ResNet18, use resnet50 as fallback
-        # For a true resnet18 student you'd swap the backbone manually
         weights = DeepLabV3_ResNet50_Weights.DEFAULT if pretrained else None
         base = deeplabv3_resnet50(weights=weights)
         print("[WARN] resnet18 student not natively supported, using resnet50 as proxy")
@@ -106,110 +102,34 @@ def build_student(arch="mobilenet", num_classes=19, pretrained=True):
     return SegModel(base, num_classes)
 
 
-# ── Guardrail Network ──
-
-class GuardrailHead(nn.Module):
-    """
-    Lightweight head that predicts teacher-student risk gap.
-
-    Inputs: student logits (C,H,W) and optionally student backbone features.
-    Outputs:
-        - risk_score: scalar image-level risk (sigmoid)
-        - pixel_heatmap: per-pixel failure probability (H,W)
-    """
-
-    def __init__(self, num_classes=19, feat_channels=0, mode="gap"):
-        """
-        Args:
-            num_classes: number of seg classes (student logit channels)
-            feat_channels: student backbone feature channels (0 = don't use features)
-            mode: 'gap' | 'binary' | 'both'
-        """
-        super().__init__()
-        self.mode = mode
-        in_ch = num_classes + feat_channels
-
-        # Shared encoder
-        self.encoder = nn.Sequential(
-            nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
-            nn.Dropout2d(0.3),
-            nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
-            nn.Dropout2d(0.3),
-            nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
-        )
-
-        # Per-pixel heatmap head
-        if mode in ("gap", "both"):
-            self.gap_head = nn.Conv2d(32, 1, 1)  # regression: gap magnitude
-        if mode in ("binary", "both"):
-            self.binary_head = nn.Conv2d(32, 1, 1)  # binary: student wrong & teacher right
-
-        # Image-level risk score (global pool → scalar)
-        self.risk_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(32, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, student_logits, student_features=None):
-        """
-        Args:
-            student_logits: (B, C, H, W) raw logits from student
-            student_features: (B, F, h, w) backbone features (optional)
-        """
-        x = student_logits.detach()  # don't backprop into student
-
-        if student_features is not None:
-            feat = F.interpolate(
-                student_features.detach(), size=x.shape[-2:],
-                mode="bilinear", align_corners=False
-            )
-            x = torch.cat([x, feat], dim=1)
-
-        enc = self.encoder(x)
-
-        out = {"risk_score": self.risk_head(enc)}
-
-        if hasattr(self, "gap_head"):
-            out["gap_heatmap"] = torch.sigmoid(self.gap_head(enc).squeeze(1))  # (B, H, W)
-        if hasattr(self, "binary_head"):
-            out["binary_heatmap"] = torch.sigmoid(self.binary_head(enc).squeeze(1))
-
-        return out
-
+# ──────────────────────────────────────────────────────────────────────────
+# Guardrail++ Head
+# ──────────────────────────────────────────────────────────────────────────
 
 class GuardrailPlusHead(nn.Module):
+    """Light-weight selective-prediction head for a frozen segmentation student.
+
+    Three outputs share a small 3-conv dense encoder fed by the student's
+    (detached) logits and, optionally, its backbone features:
+
+      - ``utility_score`` — image-level scalar in [0, 1], retained for the
+        ``scalar_benefit`` ablation.
+      - ``disagree_logits`` — per-pixel BCE logits trained against the teacher
+        / student argmax disagreement mask.
+      - ``gap_pred`` — per-pixel linear prediction of ``student_ce − teacher_ce``.
+
+    The paper's primary selective-prediction score is
+    ``sigmoid(disagree_logits).mean()`` (== ``guardrailpp_utility_dense_bce``)
+    or ``gap_pred.mean()`` (== ``guardrailpp_utility_dense_gap``), chosen
+    empirically on the validation set.
+
+    The head adds <3% latency on top of the student and is fully decoupled
+    from the (frozen) student / teacher weights.
     """
-    Guardrail++ head for utility / counterfactual margin prediction.
 
-    Outputs (depending on flags):
-        - utility_score: image-level fallback utility in [0, 1] (scalar path)
-        - margin_vec: per-family intervention margin in [0, 1]
-        - family_prob (optional): corruption family distribution
-        - disagree_logits: per-pixel teacher-vs-student disagreement logits
-          (raw; apply sigmoid at loss/inference time)
-        - gap_pred: per-pixel signed risk-gap prediction (unbounded linear)
-
-    The two dense heads (`disagree_head`, `gap_head`) are the primary
-    supervision path in the new ``dense_multi`` training regime. The scalar
-    utility/margin/family heads are retained for backward compatibility with
-    the legacy ``scalar_benefit`` training path.
-    """
-
-    def __init__(
-        self,
-        num_classes=19,
-        feat_channels=0,
-        num_families=4,
-        predict_family_prob=True,
-        use_dense_heads=True,
-    ):
+    def __init__(self, num_classes=19, feat_channels=0):
         super().__init__()
         in_ch = num_classes + feat_channels
-        self.num_families = num_families
-        self.predict_family_prob = predict_family_prob
-        self.use_dense_heads = use_dense_heads
 
         self.encoder = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
@@ -217,16 +137,14 @@ class GuardrailPlusHead(nn.Module):
             nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
-        self.utility_head = nn.Linear(32, 1)
-        self.margin_head = nn.Linear(32, num_families)
-        if self.predict_family_prob:
-            self.family_head = nn.Linear(32, num_families)
 
-        if self.use_dense_heads:
-            # Per-pixel teacher-vs-student disagreement probability (BCE target).
-            self.disagree_head = nn.Conv2d(32, 1, 1)
-            # Per-pixel signed teacher_ce - student_ce (smooth_l1 target).
-            self.gap_head = nn.Conv2d(32, 1, 1)
+        # Scalar image-level head (trained only under supervision_type='scalar_benefit').
+        self.utility_head = nn.Linear(32, 1)
+
+        # Dense per-pixel heads (trained under supervision_type in
+        # {'dense_disagree', 'dense_gap', 'dense_multi'}).
+        self.disagree_head = nn.Conv2d(32, 1, 1)
+        self.gap_head = nn.Conv2d(32, 1, 1)
 
     def forward(self, student_logits, student_features=None):
         x = student_logits.detach()
@@ -242,16 +160,8 @@ class GuardrailPlusHead(nn.Module):
         enc = self.encoder(x)
         pooled = self.pool(enc).flatten(1)
 
-        out = {
+        return {
             "utility_score": torch.sigmoid(self.utility_head(pooled)).squeeze(1),
-            "margin_vec": torch.sigmoid(self.margin_head(pooled)),
+            "disagree_logits": self.disagree_head(enc).squeeze(1),
+            "gap_pred": self.gap_head(enc).squeeze(1),
         }
-        if self.predict_family_prob:
-            out["family_prob"] = torch.softmax(self.family_head(pooled), dim=1)
-
-        if self.use_dense_heads:
-            # Raw logits / linear outputs at full encoder resolution (B, H, W).
-            out["disagree_logits"] = self.disagree_head(enc).squeeze(1)
-            out["gap_pred"] = self.gap_head(enc).squeeze(1)
-
-        return out

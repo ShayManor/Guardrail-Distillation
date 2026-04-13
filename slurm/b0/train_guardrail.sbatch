@@ -34,7 +34,8 @@ if [ -z "$SRC_DIR" ]; then
 fi
 [ ! -f "$SRC_DIR/student_skd.ckpt" ] && echo "ERROR: $SRC_DIR/student_skd.ckpt not found." && exit 1
 
-OUT="runs/mit-${MODEL}_guard_j${SLURM_JOB_ID}"
+SUPERVISION_TYPE="${SUPERVISION_TYPE:-dense_multi}"
+OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_JOB_ID}"
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/train/run.py train \
@@ -43,17 +44,15 @@ python -u src/train/run.py train \
   --checkpoint-dir "$SRC_DIR" \
   --student-model "$MIT_STUDENT" \
   --teacher-model "$TEACHER" \
-  --guardrail-mode guardrailpp \
   --skip-sup --skip-kd --skip-skd \
   --epochs-guardrail 35 \
   --batch-size 16 \
   --lr 5e-4 \
-  --utility-loss-weight 1.0 \
-  --margin-loss-weight 1.0 \
-  --composite-risk-weight 0.7 \
-  --cf-delta 0.02 \
-  --cf-severities 0.25,0.5,0.75,1.0 \
+  --supervision-type "$SUPERVISION_TYPE" \
+  --dense-disagree-weight 1.0 \
+  --dense-gap-weight 1.0 \
   --corruption-prob 0.5 \
+  --use-student-features \
   --log-every 20
 
-echo "[DONE] Stage 4 guardrail complete.  Output: $OUT  Source: $SRC_DIR"
+echo "[DONE] Guardrail ${SUPERVISION_TYPE} complete.  Output: $OUT  Source: $SRC_DIR"
