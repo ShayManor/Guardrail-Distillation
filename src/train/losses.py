@@ -212,7 +212,21 @@ def compute_guardrail_targets(student_logits, teacher_logits, gt, mode="gap"):
 
 
 class GuardrailPlusLoss(nn.Module):
-    """Loss for Guardrail++ utility / margin prediction."""
+    """Loss for Guardrail++ utility / margin prediction.
+
+    The active supervision signal for the guardrail head is selected by
+    ``supervision_type``:
+
+    * ``'scalar_benefit'`` — legacy behavior. Regress the scalar image-level
+      ``utility_score`` against ``utility_target`` with smooth_l1 and an
+      auxiliary pairwise rank loss.
+    * ``'dense_disagree'`` — masked BCE on the per-pixel disagreement head.
+    * ``'dense_gap'`` — masked smooth_l1 on the per-pixel signed risk-gap head.
+    * ``'dense_multi'`` (default) — both dense losses summed with weights.
+
+    In all supervision types the margin/family heads continue to be trained if
+    the corresponding targets are present.
+    """
 
     def __init__(
         self,
@@ -220,23 +234,68 @@ class GuardrailPlusLoss(nn.Module):
         margin_weight=1.0,
         family_weight=0.0,
         margin_loss="huber",
+        supervision_type="dense_multi",
+        dense_disagree_weight=1.0,
+        dense_gap_weight=1.0,
     ):
         super().__init__()
         self.utility_weight = utility_weight
         self.margin_weight = margin_weight
         self.family_weight = family_weight
         self.margin_loss = margin_loss
+        self.supervision_type = supervision_type
+        self.dense_disagree_weight = dense_disagree_weight
+        self.dense_gap_weight = dense_gap_weight
         self.rank_weight = 0.1
         self.gap_weight = 0.0
+
+    @staticmethod
+    def _masked_mean(x, mask):
+        denom = mask.sum().clamp(min=1.0)
+        return (x * mask).sum() / denom
 
     def forward(self, preds, targets):
         loss = 0.0
         info = {}
 
-        if "utility_score" in preds and "utility_target" in targets:
-            l_utility = F.smooth_l1_loss(preds["utility_score"], targets["utility_target"])
+        use_scalar = self.supervision_type == "scalar_benefit"
+        use_disagree = self.supervision_type in ("dense_disagree", "dense_multi")
+        use_gap = self.supervision_type in ("dense_gap", "dense_multi")
+
+        if (
+            use_scalar
+            and "utility_score" in preds
+            and "utility_target" in targets
+        ):
+            l_utility = F.smooth_l1_loss(
+                preds["utility_score"], targets["utility_target"]
+            )
             loss = loss + self.utility_weight * l_utility
             info["utility_loss"] = float(l_utility.item())
+
+        if (
+            use_disagree
+            and "disagree_logits" in preds
+            and "disagree_target" in targets
+        ):
+            logits = preds["disagree_logits"]
+            tgt = targets["disagree_target"]
+            valid = targets.get("disagree_valid", torch.ones_like(tgt))
+            per_pix = F.binary_cross_entropy_with_logits(
+                logits, tgt, reduction="none"
+            )
+            l_disagree = self._masked_mean(per_pix, valid)
+            loss = loss + self.dense_disagree_weight * l_disagree
+            info["dense_disagree_loss"] = float(l_disagree.item())
+
+        if use_gap and "gap_pred" in preds and "gap_target" in targets:
+            pred = preds["gap_pred"]
+            tgt = targets["gap_target"]
+            valid = targets.get("gap_valid", torch.ones_like(tgt))
+            per_pix = F.smooth_l1_loss(pred, tgt, reduction="none")
+            l_gap_dense = self._masked_mean(per_pix, valid)
+            loss = loss + self.dense_gap_weight * l_gap_dense
+            info["dense_gap_loss"] = float(l_gap_dense.item())
 
         if "margin_vec" in preds and "margin_target" in targets:
             if self.margin_loss == "mse":
@@ -260,7 +319,11 @@ class GuardrailPlusLoss(nn.Module):
             loss = loss + self.gap_weight * l_gap
             info["gap_loss"] = float(l_gap.item())
 
-        if "utility_score" in preds and "utility_target" in targets:
+        if (
+            use_scalar
+            and "utility_score" in preds
+            and "utility_target" in targets
+        ):
             u_pred = preds["utility_score"]
             u_true = targets["utility_target"]
             if u_pred.shape[0] >= 2:

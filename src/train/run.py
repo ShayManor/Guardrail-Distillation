@@ -52,7 +52,29 @@ def parse_args():
     train_p.add_argument("--margin-loss",      default="huber", choices=["huber", "mse"])
     train_p.add_argument("--mc-dropout-passes",type=int,   default=0)
     train_p.add_argument("--corruption-prob",   type=float, default=0.5)
-    train_p.add_argument("--use-student-features", action="store_true")
+    train_p.add_argument(
+        "--use-student-features",
+        dest="use_student_features",
+        action="store_true",
+        default=True,
+        help="Feed student backbone features into the guardrail head (default: on).",
+    )
+    train_p.add_argument(
+        "--no-student-features",
+        dest="use_student_features",
+        action="store_false",
+        help="Disable student feature input; logits-only guardrail (legacy).",
+    )
+    train_p.add_argument(
+        "--supervision-type",
+        default="dense_multi",
+        choices=["scalar_benefit", "dense_disagree", "dense_gap", "dense_multi"],
+        help="Guardrail supervision target. 'dense_multi' trains both dense "
+             "heads (disagreement + signed risk-gap); 'scalar_benefit' is the "
+             "legacy image-level utility path.",
+    )
+    train_p.add_argument("--dense-disagree-weight", type=float, default=1.0)
+    train_p.add_argument("--dense-gap-weight",      type=float, default=1.0)
     train_p.add_argument("--composite-risk-weight", type=float, default=0.0,
         help="Mix student risk into utility target: 0=pure benefit (default), "
              "0.8=20%% benefit + 80%% risk. Only affects guardrail stage.")
@@ -121,8 +143,11 @@ def build_cfg(args):
         family_loss_weight=getattr(args, "family_loss_weight", 0.0),
         margin_loss=getattr(args, "margin_loss", "huber"),
         corruption_prob=getattr(args, "corruption_prob", 0.5),
-        use_student_features=getattr(args, "use_student_features", False),
+        use_student_features=getattr(args, "use_student_features", True),
         composite_risk_weight=getattr(args, "composite_risk_weight", 0.0),
+        supervision_type=getattr(args, "supervision_type", "dense_multi"),
+        dense_disagree_weight=getattr(args, "dense_disagree_weight", 1.0),
+        dense_gap_weight=getattr(args, "dense_gap_weight", 1.0),
         seed=getattr(args, "seed", 42),
     )
 
@@ -215,9 +240,15 @@ def run_eval_pipeline(args, cfg, checkpoint_map):
         # Infer feat_channels from saved encoder weight shape
         enc_weight = guard_state["model"]["encoder.0.weight"]
         feat_ch = enc_weight.shape[1] - cfg.num_classes  # total_in - logit_channels
-        print(f"[Eval] Guardrail feat_channels={feat_ch} (from checkpoint)")
+        has_dense = "disagree_head.weight" in guard_state["model"]
+        print(f"[Eval] Guardrail feat_channels={feat_ch} dense_heads={has_dense}")
         if cfg.guardrail_mode in ("utility", "margin", "guardrailpp"):
-            guardrail_head = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch, num_families=4)
+            guardrail_head = GuardrailPlusHead(
+                num_classes=cfg.num_classes,
+                feat_channels=feat_ch,
+                num_families=4,
+                use_dense_heads=has_dense,
+            )
         else:
             guardrail_head = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=cfg.guardrail_mode)
         guardrail_head.load_state_dict(guard_state["model"])

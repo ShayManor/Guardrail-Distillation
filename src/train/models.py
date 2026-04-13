@@ -183,10 +183,18 @@ class GuardrailPlusHead(nn.Module):
     """
     Guardrail++ head for utility / counterfactual margin prediction.
 
-    Outputs:
-        - utility_score: image-level fallback utility in [0, 1]
+    Outputs (depending on flags):
+        - utility_score: image-level fallback utility in [0, 1] (scalar path)
         - margin_vec: per-family intervention margin in [0, 1]
         - family_prob (optional): corruption family distribution
+        - disagree_logits: per-pixel teacher-vs-student disagreement logits
+          (raw; apply sigmoid at loss/inference time)
+        - gap_pred: per-pixel signed risk-gap prediction (unbounded linear)
+
+    The two dense heads (`disagree_head`, `gap_head`) are the primary
+    supervision path in the new ``dense_multi`` training regime. The scalar
+    utility/margin/family heads are retained for backward compatibility with
+    the legacy ``scalar_benefit`` training path.
     """
 
     def __init__(
@@ -195,11 +203,13 @@ class GuardrailPlusHead(nn.Module):
         feat_channels=0,
         num_families=4,
         predict_family_prob=True,
+        use_dense_heads=True,
     ):
         super().__init__()
         in_ch = num_classes + feat_channels
         self.num_families = num_families
         self.predict_family_prob = predict_family_prob
+        self.use_dense_heads = use_dense_heads
 
         self.encoder = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
@@ -207,11 +217,16 @@ class GuardrailPlusHead(nn.Module):
             nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
-        # self.gap_head = nn.Conv2d(32, 1, 1)
         self.utility_head = nn.Linear(32, 1)
         self.margin_head = nn.Linear(32, num_families)
         if self.predict_family_prob:
             self.family_head = nn.Linear(32, num_families)
+
+        if self.use_dense_heads:
+            # Per-pixel teacher-vs-student disagreement probability (BCE target).
+            self.disagree_head = nn.Conv2d(32, 1, 1)
+            # Per-pixel signed teacher_ce - student_ce (smooth_l1 target).
+            self.gap_head = nn.Conv2d(32, 1, 1)
 
     def forward(self, student_logits, student_features=None):
         x = student_logits.detach()
@@ -230,8 +245,13 @@ class GuardrailPlusHead(nn.Module):
         out = {
             "utility_score": torch.sigmoid(self.utility_head(pooled)).squeeze(1),
             "margin_vec": torch.sigmoid(self.margin_head(pooled)),
-            # "gap_heatmap": torch.sigmoid(self.gap_head(enc).squeeze(1)),
         }
         if self.predict_family_prob:
             out["family_prob"] = torch.softmax(self.family_head(pooled), dim=1)
+
+        if self.use_dense_heads:
+            # Raw logits / linear outputs at full encoder resolution (B, H, W).
+            out["disagree_logits"] = self.disagree_head(enc).squeeze(1)
+            out["gap_pred"] = self.gap_head(enc).squeeze(1)
+
         return out
