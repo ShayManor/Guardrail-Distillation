@@ -78,27 +78,31 @@ SUPERVISION_TYPE=dense_gap      sbatch slurm/b1/train_guardrail.sbatch
 
 ### E2 — supervision-type ablation (paper Table 2)
 
-One array job trains all four supervision modes for mit-b1 in parallel:
+Each supervision mode is a separate, single-task 12 h job. Queue them
+individually; no array jobs. `dense_multi` is the paper's primary run and is
+the default for `train_guardrail.sbatch`.
 
 ```bash
-sbatch slurm/b1/train_guardrail_ablation.sbatch
+sbatch slurm/b1/train_guardrail.sbatch                   # dense_multi (default/primary)
+sbatch slurm/b1/train_guardrail_scalar.sbatch            # scalar_benefit ablation
+sbatch slurm/b1/train_guardrail_dense_disagree.sbatch    # dense_disagree ablation
+sbatch slurm/b1/train_guardrail_dense_gap.sbatch         # dense_gap ablation
 ```
 
-Outputs land in `runs/mit-b1_guard_<mode>_j<jobid>_<taskid>/`.
+Outputs land in `runs/mit-b1_guard_<mode>_j<jobid>/`.
 
 ### E4 — Deep Ensemble baseline (paper Table 1, ensemble row)
 
-Train N independent SKD students for mit-b1 from the shared sup checkpoint,
-each with a different random seed. Default N=3:
+Three independent SKD members for mit-b1 from the shared sup checkpoint.
+Each file is a single 12 h job; queue as many as parallel-GPU budget allows.
 
 ```bash
-sbatch slurm/b1/train_ensemble_skd.sbatch
-# or, for 5 members:
-sbatch --array=0-4 slurm/b1/train_ensemble_skd.sbatch
+sbatch slurm/b1/train_ensemble_m1.sbatch   # seed 42
+sbatch slurm/b1/train_ensemble_m2.sbatch   # seed 137
+sbatch slurm/b1/train_ensemble_m3.sbatch   # seed 256
 ```
 
-Outputs: `runs/mit-b1_ensemble_m{1..N}_seed<seed>_j<jobid>/student_skd.ckpt`.
-Ensemble scoring at eval time is done by `src/eval/full_eval.py` (WIP).
+Outputs: `runs/mit-b1_ensemble_m{1,2,3}_seed<seed>_j<jobid>/student_skd.ckpt`.
 
 ### Eval
 

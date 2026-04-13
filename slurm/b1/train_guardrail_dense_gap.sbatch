@@ -1,17 +1,5 @@
 #!/bin/bash -l
-#
-# E2 ablation (paper Table 2): train the Guardrail++ head for mit-b1 in all
-# four supervision modes, using a SLURM array job. Each array task is an
-# independent 12-hour guardrail training run.
-#
-# Usage:
-#   sbatch slurm/b1/train_guardrail_ablation.sbatch
-#
-# Outputs land in runs/mit-b1_guard_<supervision_type>_j<jobid> — one
-# directory per mode. The matching guardrail.ckpt can then be scored by
-# src/eval/full_eval.py on Cityscapes-val and ACDC.
-#
-#SBATCH --job-name=b1-guard-abl
+#SBATCH --job-name=b1-guard-gap
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -19,9 +7,11 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-3
-#SBATCH -o /scratch/gautschi/manors/logs/b1-guard-abl_%A_%a.out
-#SBATCH -e /scratch/gautschi/manors/logs/b1-guard-abl_%A_%a.err
+#SBATCH -o /scratch/gautschi/manors/logs/b1-guard-gap_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/b1-guard-gap_%j.err
+
+# E2 ablation — dense_gap only guardrail for mit-b1 (per-pixel smooth_l1 on
+# signed student_ce - teacher_ce). Paper Table 2 row 3.
 
 set -euo pipefail
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
@@ -34,10 +24,9 @@ export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
-MODES=("scalar_benefit" "dense_disagree" "dense_gap" "dense_multi")
-SUPERVISION_TYPE="${MODES[$SLURM_ARRAY_TASK_ID]}"
-
 MODEL=b1
+SUPERVISION_TYPE=dense_gap
+
 MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
@@ -49,9 +38,7 @@ if [ -z "$SRC_DIR" ]; then
 fi
 [ ! -f "$SRC_DIR/student_skd.ckpt" ] && echo "ERROR: $SRC_DIR/student_skd.ckpt not found." && exit 1
 
-OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-
-echo "[ablation] task=$SLURM_ARRAY_TASK_ID mode=$SUPERVISION_TYPE output=$OUT"
+OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_JOB_ID}"
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/train/run.py train \
@@ -65,10 +52,9 @@ python -u src/train/run.py train \
   --batch-size 8 \
   --lr 5e-4 \
   --supervision-type "$SUPERVISION_TYPE" \
-  --dense-disagree-weight 1.0 \
   --dense-gap-weight 1.0 \
   --corruption-prob 0.5 \
   --use-student-features \
   --log-every 20
 
-echo "[DONE] Ablation task $SLURM_ARRAY_TASK_ID (${SUPERVISION_TYPE}) complete."
+echo "[DONE] Guardrail ${SUPERVISION_TYPE} complete.  Output: $OUT  Source: $SRC_DIR"
