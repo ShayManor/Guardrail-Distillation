@@ -35,7 +35,7 @@ def setup_wandb(cfg, args):
     # ── Experiment name ──
     exp_name = getattr(args, "wandb_name", None)
     if not exp_name:
-        parts = [args.student_model.split("/")[-1], cfg.guardrail_mode]
+        parts = [args.student_model.split("/")[-1], cfg.supervision_type]
         slurm_job = os.environ.get("SLURM_JOB_ID")
         if slurm_job:
             slurm_proc = os.environ.get("SLURM_PROCID", "0")
@@ -52,7 +52,7 @@ def setup_wandb(cfg, args):
             save_code=True,
             dir=tempfile.mkdtemp(),
             settings=wandb.Settings(start_method="thread"),
-            tags=[cfg.guardrail_mode, args.student_model.split("/")[-1]],
+            tags=[cfg.supervision_type, args.student_model.split("/")[-1]],
         )
     except Exception as e:
         print(f"[wandb] Init failed ({e}). Training will continue without wandb.")

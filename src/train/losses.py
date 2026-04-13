@@ -123,131 +123,43 @@ class PairwiseAffinityLoss(nn.Module):
 
 
 # ──────────────────────────────────────────────
-# Stage 4: Guardrail losses
+# Stage 4: Guardrail++ loss (dense per-pixel supervision)
 # ──────────────────────────────────────────────
-
-class GuardrailLoss(nn.Module):
-    """
-    Loss for training the guardrail head.
-
-    Targets:
-        gap_map: per-pixel |loss_student - loss_teacher| (regression)
-        binary_map: (teacher_correct & student_wrong) mask (binary CE)
-        risk_label: image-level scalar (mean gap or fraction of failures)
-    """
-
-    def __init__(self, mode="gap"):
-        super().__init__()
-        self.mode = mode
-
-    def forward(self, preds, targets):
-        loss = 0.0
-        info = {}
-
-        # Image-level risk
-        if "risk_score" in preds and "risk_label" in targets:
-            risk_loss = F.mse_loss(preds["risk_score"].squeeze(), targets["risk_label"])
-            loss = loss + risk_loss
-            info["risk_loss"] = risk_loss.item()
-
-        # Gap heatmap (regression)
-        if "gap_heatmap" in preds and "gap_map" in targets:
-            gap_loss = F.smooth_l1_loss(preds["gap_heatmap"], targets["gap_map"])
-            loss = loss + gap_loss
-            info["gap_loss"] = gap_loss.item()
-
-        # Binary heatmap
-        if "binary_heatmap" in preds and "binary_map" in targets:
-            bin_loss = F.binary_cross_entropy(
-                preds["binary_heatmap"], targets["binary_map"].float()
-            )
-            loss = loss + bin_loss
-            info["binary_loss"] = bin_loss.item()
-
-        return loss, info
-
-
-def compute_guardrail_targets(student_logits, teacher_logits, gt, mode="gap"):
-    ignore_mask = gt == IGNORE_INDEX
-    gt_safe = gt.clone()
-    gt_safe[ignore_mask] = 0
-
-    student_pred = student_logits.argmax(dim=1)
-    teacher_pred = teacher_logits.argmax(dim=1)
-
-    student_correct = (student_pred == gt) & ~ignore_mask
-    teacher_correct = (teacher_pred == gt) & ~ignore_mask
-
-    targets = {}
-
-    if mode in ("gap", "both"):
-        student_ce = F.cross_entropy(student_logits, gt_safe, reduction="none")
-        teacher_ce = F.cross_entropy(teacher_logits, gt_safe, reduction="none")
-        gap = (student_ce - teacher_ce).clamp(min=0)
-        gap[ignore_mask] = 0
-
-        # ── NORMALIZE to [0, 1] range ──
-        # Per-image normalization so sigmoid target is valid
-        B = gap.shape[0]
-        for i in range(B):
-            valid = ~ignore_mask[i]
-            if valid.any():
-                g_max = gap[i][valid].max()
-                if g_max > 0:
-                    gap[i] = gap[i] / g_max
-
-        targets["gap_map"] = gap
-        # risk_label: fraction of pixels with significant gap (binary-ish, naturally 0-1)
-        targets["risk_label"] = (gap > 0.1).float().sum(dim=(1, 2)) / (~ignore_mask).float().sum(dim=(1, 2)).clamp(min=1)
-
-    if mode in ("binary", "both"):
-        binary = (teacher_correct & ~student_correct).float()
-        binary[ignore_mask] = 0
-        targets["binary_map"] = binary
-        if "risk_label" not in targets:
-            valid = (~ignore_mask).float().sum(dim=(1, 2)).clamp(min=1)
-            targets["risk_label"] = binary.sum(dim=(1, 2)) / valid
-
-    return targets
 
 
 class GuardrailPlusLoss(nn.Module):
-    """Loss for Guardrail++ utility / margin prediction.
+    """Training loss for the Guardrail++ selective-prediction head.
 
-    The active supervision signal for the guardrail head is selected by
-    ``supervision_type``:
+    The active supervision signal is selected by ``supervision_type``:
 
-    * ``'scalar_benefit'`` — legacy behavior. Regress the scalar image-level
-      ``utility_score`` against ``utility_target`` with smooth_l1 and an
-      auxiliary pairwise rank loss.
-    * ``'dense_disagree'`` — masked BCE on the per-pixel disagreement head.
-    * ``'dense_gap'`` — masked smooth_l1 on the per-pixel signed risk-gap head.
+    * ``'scalar_benefit'`` — image-level regression of ``utility_score``
+      against the scalar teacher-benefit target ``student_risk − teacher_risk``
+      (legacy baseline; used for the ablation in Table 2).
+    * ``'dense_disagree'`` — masked BCE on the per-pixel ``disagree_logits``
+      head against the teacher/student argmax disagreement mask.
+    * ``'dense_gap'`` — masked smooth-L1 on the per-pixel ``gap_pred`` head
+      against ``student_ce − teacher_ce``.
     * ``'dense_multi'`` (default) — both dense losses summed with weights.
 
-    In all supervision types the margin/family heads continue to be trained if
-    the corresponding targets are present.
+    The scalar path is retained only so we can ablate against it; the paper's
+    primary method is ``dense_multi``.
     """
 
     def __init__(
         self,
-        utility_weight=1.0,
-        margin_weight=1.0,
-        family_weight=0.0,
-        margin_loss="huber",
         supervision_type="dense_multi",
         dense_disagree_weight=1.0,
         dense_gap_weight=1.0,
+        scalar_weight=1.0,
     ):
         super().__init__()
-        self.utility_weight = utility_weight
-        self.margin_weight = margin_weight
-        self.family_weight = family_weight
-        self.margin_loss = margin_loss
+        assert supervision_type in (
+            "scalar_benefit", "dense_disagree", "dense_gap", "dense_multi"
+        ), f"unknown supervision_type: {supervision_type}"
         self.supervision_type = supervision_type
-        self.dense_disagree_weight = dense_disagree_weight
-        self.dense_gap_weight = dense_gap_weight
-        self.rank_weight = 0.1
-        self.gap_weight = 0.0
+        self.dense_disagree_weight = float(dense_disagree_weight)
+        self.dense_gap_weight = float(dense_gap_weight)
+        self.scalar_weight = float(scalar_weight)
 
     @staticmethod
     def _masked_mean(x, mask):
@@ -255,32 +167,25 @@ class GuardrailPlusLoss(nn.Module):
         return (x * mask).sum() / denom
 
     def forward(self, preds, targets):
-        loss = 0.0
+        loss = torch.zeros((), device=preds["disagree_logits"].device)
         info = {}
 
-        use_scalar = self.supervision_type == "scalar_benefit"
-        use_disagree = self.supervision_type in ("dense_disagree", "dense_multi")
-        use_gap = self.supervision_type in ("dense_gap", "dense_multi")
+        st = self.supervision_type
+        use_scalar = st == "scalar_benefit"
+        use_disagree = st in ("dense_disagree", "dense_multi")
+        use_gap = st in ("dense_gap", "dense_multi")
 
-        if (
-            use_scalar
-            and "utility_score" in preds
-            and "utility_target" in targets
-        ):
+        if use_scalar:
             l_utility = F.smooth_l1_loss(
                 preds["utility_score"], targets["utility_target"]
             )
-            loss = loss + self.utility_weight * l_utility
+            loss = loss + self.scalar_weight * l_utility
             info["utility_loss"] = float(l_utility.item())
 
-        if (
-            use_disagree
-            and "disagree_logits" in preds
-            and "disagree_target" in targets
-        ):
+        if use_disagree:
             logits = preds["disagree_logits"]
             tgt = targets["disagree_target"]
-            valid = targets.get("disagree_valid", torch.ones_like(tgt))
+            valid = targets["disagree_valid"]
             per_pix = F.binary_cross_entropy_with_logits(
                 logits, tgt, reduction="none"
             )
@@ -288,53 +193,14 @@ class GuardrailPlusLoss(nn.Module):
             loss = loss + self.dense_disagree_weight * l_disagree
             info["dense_disagree_loss"] = float(l_disagree.item())
 
-        if use_gap and "gap_pred" in preds and "gap_target" in targets:
+        if use_gap:
             pred = preds["gap_pred"]
             tgt = targets["gap_target"]
-            valid = targets.get("gap_valid", torch.ones_like(tgt))
+            valid = targets["gap_valid"]
             per_pix = F.smooth_l1_loss(pred, tgt, reduction="none")
             l_gap_dense = self._masked_mean(per_pix, valid)
             loss = loss + self.dense_gap_weight * l_gap_dense
             info["dense_gap_loss"] = float(l_gap_dense.item())
 
-        if "margin_vec" in preds and "margin_target" in targets:
-            if self.margin_loss == "mse":
-                l_margin = F.mse_loss(preds["margin_vec"], targets["margin_target"])
-            else:
-                l_margin = F.smooth_l1_loss(preds["margin_vec"], targets["margin_target"])
-            loss = loss + self.margin_weight * l_margin
-            info["margin_loss"] = float(l_margin.item())
-
-        if (
-            self.family_weight > 0.0
-            and "family_prob" in preds
-            and "family_target" in targets
-        ):
-            l_family = F.nll_loss((preds["family_prob"] + 1e-8).log(), targets["family_target"].long())
-            loss = loss + self.family_weight * l_family
-            info["family_loss"] = float(l_family.item())
-
-        if "gap_heatmap" in preds and "gap_map" in targets:
-            l_gap = F.smooth_l1_loss(preds["gap_heatmap"], targets["gap_map"])
-            loss = loss + self.gap_weight * l_gap
-            info["gap_loss"] = float(l_gap.item())
-
-        if (
-            use_scalar
-            and "utility_score" in preds
-            and "utility_target" in targets
-        ):
-            u_pred = preds["utility_score"]
-            u_true = targets["utility_target"]
-            if u_pred.shape[0] >= 2:
-                diff_pred = u_pred.unsqueeze(0) - u_pred.unsqueeze(1)
-                diff_true = (u_true.unsqueeze(0) - u_true.unsqueeze(1)).sign()
-                # Adaptive margin: scale with target spread to avoid degenerate
-                # constant loss when targets are near-constant
-                margin = max(0.01, 0.5 * float(u_true.std().item()))
-                rank_loss = F.relu(margin - diff_pred * diff_true).mean()
-                loss = loss + self.rank_weight * rank_loss
-                info["rank_loss"] = float(rank_loss.item())
-
-        info["loss"] = float(loss.item()) if torch.is_tensor(loss) else float(loss)
+        info["loss"] = float(loss.item())
         return loss, info

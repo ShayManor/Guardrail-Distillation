@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=b2-4-guard
+#SBATCH --job-name=b1-guard-scalar
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -7,8 +7,11 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/b2-4-guard_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/b2-4-guard_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/b1-guard-scalar_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/b1-guard-scalar_%j.err
+
+# E2 ablation — scalar_benefit guardrail for mit-b1 (legacy image-level
+# utility regression). Paper Table 2 row 1.
 
 set -euo pipefail
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
@@ -21,11 +24,12 @@ export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
-MODEL=b2
+MODEL=b1
+SUPERVISION_TYPE=scalar_benefit
+
 MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
-# Auto-discover latest SKD run (override: SRC_DIR=<path> sbatch ...)
 SRC_DIR="${SRC_DIR:-}"
 if [ -z "$SRC_DIR" ]; then
   SRC_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt outputs*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
@@ -34,7 +38,6 @@ if [ -z "$SRC_DIR" ]; then
 fi
 [ ! -f "$SRC_DIR/student_skd.ckpt" ] && echo "ERROR: $SRC_DIR/student_skd.ckpt not found." && exit 1
 
-SUPERVISION_TYPE="${SUPERVISION_TYPE:-dense_multi}"
 OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_JOB_ID}"
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
@@ -49,8 +52,7 @@ python -u src/train/run.py train \
   --batch-size 8 \
   --lr 5e-4 \
   --supervision-type "$SUPERVISION_TYPE" \
-  --dense-disagree-weight 1.0 \
-  --dense-gap-weight 1.0 \
+  --scalar-benefit-weight 1.0 \
   --corruption-prob 0.5 \
   --use-student-features \
   --log-every 20

@@ -10,6 +10,17 @@
 #SBATCH -o /scratch/gautschi/manors/logs/b1-4-guard_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/b1-4-guard_%j.err
 
+# Train the Guardrail++ head for mit-b1 with the paper's default supervision
+# (dense_multi). To train an ablation variant run:
+#
+#   SUPERVISION_TYPE=scalar_benefit  sbatch slurm/b1/train_guardrail.sbatch
+#   SUPERVISION_TYPE=dense_disagree  sbatch slurm/b1/train_guardrail.sbatch
+#   SUPERVISION_TYPE=dense_gap       sbatch slurm/b1/train_guardrail.sbatch
+#   SUPERVISION_TYPE=dense_multi     sbatch slurm/b1/train_guardrail.sbatch   # default
+#
+# See slurm/b1/train_guardrail_ablation.sbatch for an array-job version that
+# launches all four ablation modes together.
+
 set -euo pipefail
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
 
@@ -22,6 +33,8 @@ unset DISPLAY
 cd "$REPO"
 
 MODEL=b1
+SUPERVISION_TYPE="${SUPERVISION_TYPE:-dense_multi}"
+
 MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
@@ -34,7 +47,7 @@ if [ -z "$SRC_DIR" ]; then
 fi
 [ ! -f "$SRC_DIR/student_skd.ckpt" ] && echo "ERROR: $SRC_DIR/student_skd.ckpt not found." && exit 1
 
-OUT="runs/mit-${MODEL}_guard_j${SLURM_JOB_ID}"
+OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_JOB_ID}"
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/train/run.py train \
@@ -43,17 +56,15 @@ python -u src/train/run.py train \
   --checkpoint-dir "$SRC_DIR" \
   --student-model "$MIT_STUDENT" \
   --teacher-model "$TEACHER" \
-  --guardrail-mode guardrailpp \
   --skip-sup --skip-kd --skip-skd \
   --epochs-guardrail 35 \
   --batch-size 8 \
   --lr 5e-4 \
-  --utility-loss-weight 1.0 \
-  --margin-loss-weight 1.0 \
-  --composite-risk-weight 0.7 \
-  --cf-delta 0.02 \
-  --cf-severities 0.25,0.5,0.75,1.0 \
+  --supervision-type "$SUPERVISION_TYPE" \
+  --dense-disagree-weight 1.0 \
+  --dense-gap-weight 1.0 \
   --corruption-prob 0.5 \
+  --use-student-features \
   --log-every 20
 
-echo "[DONE] Stage 4 guardrail complete.  Output: $OUT  Source: $SRC_DIR"
+echo "[DONE] Guardrail ${SUPERVISION_TYPE} complete.  Output: $OUT  Source: $SRC_DIR"

@@ -504,7 +504,6 @@ def build_eval_loader(cfg: EvalConfig):
         alpha_struct=0.5,
         kd_temperature=cfg.temperature,
         log_every=100,
-        guardrail_mode="gap",
     )
 
     if hasattr(project_cfg, "dataset_name"):
@@ -685,34 +684,36 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     if not checkpoint_path:
         return None
     try:
-        from src.train.models import GuardrailHead, GuardrailPlusHead
+        from src.train.models import GuardrailPlusHead
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
-            "Could not import GuardrailHead from your repo. "
-            "Edit build_guardrail_model(...) in full_eval.py to match your repo."
+            "Could not import GuardrailPlusHead from src.train.models."
         ) from exc
 
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
-    guard_mode = state.get("guardrail_mode", "gap") if isinstance(state, dict) else "gap"
     state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
     enc_weight = state_dict["encoder.0.weight"]
     feat_ch = enc_weight.shape[1] - cfg.num_classes
-    has_dense = "disagree_head.weight" in state_dict
-    print(
-        f"[guardrail] Inferred feat_channels={feat_ch} dense_heads={has_dense} from checkpoint"
+
+    supervision_type = (
+        state.get("supervision_type", "dense_multi") if isinstance(state, dict) else "dense_multi"
     )
-    if guard_mode in ("utility", "margin", "guardrailpp"):
-        model = GuardrailPlusHead(
-            num_classes=cfg.num_classes,
-            feat_channels=feat_ch,
-            num_families=4,
-            use_dense_heads=has_dense,
-        )
-    else:
-        print(f"[guardrail] WARNING: using basic guardrail head")
-        model = GuardrailHead(num_classes=cfg.num_classes, feat_channels=feat_ch, mode=guard_mode)
+    use_student_features_ckpt = (
+        bool(state.get("use_student_features", feat_ch > 0))
+        if isinstance(state, dict) else (feat_ch > 0)
+    )
+    print(
+        f"[guardrail] feat_channels={feat_ch} supervision_type={supervision_type} "
+        f"use_student_features={use_student_features_ckpt}"
+    )
+
+    model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch)
     model.load_state_dict(state_dict)
-    return model.to(cfg.device).eval()
+    model = model.to(cfg.device).eval()
+    # Stash metadata for downstream logging.
+    model._supervision_type = supervision_type  # type: ignore[attr-defined]
+    model._use_student_features = use_student_features_ckpt  # type: ignore[attr-defined]
+    return model
 
 
 # =============================================================================
@@ -915,18 +916,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             eval_image_res = f"{images.shape[2]}x{images.shape[3]}"
 
         # Student forward
-        images_input = images
-        preproc_ms_img = 0.0
-        if guardrail is not None and args.guardrail_student_name == args.student_name and hasattr(args,
-                                                                                                  '_prev_margin_vec'):
-            # Use margin from previous batch as proxy (or run guardrail first)
-            pass  # handled below after guardrail forward
-
         with Timer(cfg.device) as t_student:
             try:
-                out = student(images_input, return_features=True)
+                out = student(images, return_features=True)
             except TypeError:
-                out = student(images_input)
+                out = student(images)
         if isinstance(out, tuple):
             student_logits = out[0]
             student_feat = out[1] if len(out) > 1 else None
@@ -950,26 +944,15 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         # Guardrail forward
         guard_raw = None
         guard_ms_img = 0.0
-        # ── Adaptive preprocessing pass (uses margin_vec to preprocess, re-run student) ──
-        adapt_logits = None
-        if guard_raw is not None and isinstance(guard_raw, dict) and "margin_vec" in guard_raw:
-            from src.train.train_guardrail import apply_adaptive_preprocessing
-            margin_v = guard_raw["margin_vec"]
-            needs_preproc = (margin_v.min(dim=1).values < 0.5)
-            if needs_preproc.any():
-                with Timer(cfg.device) as t_adapt:
-                    images_adapted = apply_adaptive_preprocessing(images, margin_v, threshold=0.5)
-                    adapt_out = student(images_adapted)
-                    adapt_logits = adapt_out[0] if isinstance(adapt_out, tuple) else adapt_out
-                adapt_ms_img = t_adapt.ms / max(bsz, 1)
+        adapt_logits = None  # kept for schema compatibility; no adaptive preprocessing now
         if guardrail is not None and args.guardrail_student_name == args.student_name:
-            # Only pass features if guardrail was trained with them
             _guard_feat = student_feat if guardrail_expects_feat else None
             with Timer(cfg.device) as t_guard:
                 try:
                     guard_raw = guardrail(student_logits, _guard_feat)
                 except TypeError:
                     guard_raw = guardrail(student_logits)
+            guard_ms_img = t_guard.ms / max(bsz, 1)
 
         # MC dropout forward (uncertainty only)
         mc_entropies: Optional[List[float]] = None
@@ -1089,71 +1072,58 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 row["mc_mutual_info"] = float(mc_mutual_infos[i])
                 row["mc_dropout_latency_ms"] = float(mc_latency_per_img)
 
-            if adapt_logits is not None and needs_preproc[i]:
-                adapt_pred = adapt_logits[i].argmax(dim=0)
-                adapt_miou = image_miou(adapt_pred, gt, cfg.num_classes)
-                row["adapted_miou"] = adapt_miou
-                row["adapted_risk"] = 1.0 - adapt_miou
-                row["adaptation_gain"] = adapt_miou - student_miou
+            if guard_raw is not None and isinstance(guard_raw, dict):
+                # ── Dense disagreement head (primary in dense_multi mode) ──
+                if "disagree_logits" in guard_raw:
+                    dl = guard_raw["disagree_logits"][i]
+                    if dl.ndim == 2 and dl.shape == gt.shape:
+                        dl_valid = torch.sigmoid(dl[valid])
+                    else:
+                        dl_valid = torch.sigmoid(dl.flatten())
+                    if dl_valid.numel() > 0:
+                        util_bce = float(dl_valid.mean().item())
+                        row["guardrailpp_utility_dense_bce"] = util_bce
+                        row["guardrailpp_keep_dense_bce"] = 1.0 - util_bce
 
-            if guard_raw is not None:
-                if isinstance(guard_raw, dict):
-                    if "risk_score" in guard_raw:
-                        row["guardrail_risk"] = float(guard_raw["risk_score"][i].item())
-                        row["guardrail_keep"] = 1.0 - row["guardrail_risk"]
-                    if "utility_score" in guard_raw:
-                        utility = float(guard_raw["utility_score"][i].item())
-                        utility = max(0.0, min(1.0, utility))
-                        row["guardrailpp_utility"] = utility
-                        row["guardrailpp_keep"] = 1.0 - utility
-                        # Alias to generic guardrail columns for existing plots/tables.
-                        row["guardrail_risk"] = utility
-                        row["guardrail_keep"] = 1.0 - utility
-                    if "margin_vec" in guard_raw:
-                        margin = guard_raw["margin_vec"][i]
-                        row["guardrailpp_margin_min"] = float(margin.min().item())
-                        for k in range(int(margin.shape[0])):
-                            row[f"guardrailpp_margin_{k}"] = float(margin[k].item())
-                    elif "score" in guard_raw:
-                        row["guardrail_risk"] = float(guard_raw["score"][i].item())
-                        row["guardrail_keep"] = 1.0 - row["guardrail_risk"]
-                    if "gap_heatmap" in guard_raw:
-                        hm = guard_raw["gap_heatmap"][i]
-                        if hm.ndim == 2 and hm.shape == gt.shape:
-                            hm_valid = hm[valid]
-                            row["guardrail_heatmap_mean"] = float(hm_valid.mean().item())
-                            row["guardrail_heatmap_std"] = float(hm_valid.std().item()) if hm_valid.numel() > 1 else 0.0
-                            row["guardrail_heatmap_max"] = float(hm_valid.max().item())
-                    # Dense-head utilities (new default training regime).
-                    if "disagree_logits" in guard_raw:
-                        dl = guard_raw["disagree_logits"][i]
-                        if dl.ndim == 2 and dl.shape == gt.shape:
-                            dl_valid = torch.sigmoid(dl[valid])
-                        else:
-                            dl_valid = torch.sigmoid(dl.flatten())
-                        if dl_valid.numel() > 0:
-                            util_bce = float(dl_valid.mean().item())
-                            row["guardrailpp_utility_dense_bce"] = util_bce
-                            row["guardrailpp_keep_dense_bce"] = 1.0 - util_bce
-                    if "gap_pred" in guard_raw:
-                        gp = guard_raw["gap_pred"][i]
-                        if gp.ndim == 2 and gp.shape == gt.shape:
-                            gp_valid = gp[valid]
-                        else:
-                            gp_valid = gp.flatten()
-                        if gp_valid.numel() > 0:
-                            util_gap_raw = float(gp_valid.mean().item())
-                            row["guardrailpp_utility_dense_gap_raw"] = util_gap_raw
-                            # Squash to [0,1] via sigmoid so it can share the
-                            # keep/defer plumbing with other scores.
-                            util_gap = float(torch.sigmoid(
-                                torch.tensor(util_gap_raw)
-                            ).item())
-                            row["guardrailpp_utility_dense_gap"] = util_gap
-                            row["guardrailpp_keep_dense_gap"] = 1.0 - util_gap
-                elif torch.is_tensor(guard_raw):
-                    row["guardrail_risk"] = float(guard_raw[i].item())
-                    row["guardrail_keep"] = 1.0 - row["guardrail_risk"]
+                # ── Dense signed risk-gap head (primary alternative) ──
+                if "gap_pred" in guard_raw:
+                    gp = guard_raw["gap_pred"][i]
+                    if gp.ndim == 2 and gp.shape == gt.shape:
+                        gp_valid = gp[valid]
+                    else:
+                        gp_valid = gp.flatten()
+                    if gp_valid.numel() > 0:
+                        util_gap_raw = float(gp_valid.mean().item())
+                        row["guardrailpp_utility_dense_gap_raw"] = util_gap_raw
+                        util_gap = float(
+                            torch.sigmoid(torch.tensor(util_gap_raw)).item()
+                        )
+                        row["guardrailpp_utility_dense_gap"] = util_gap
+                        row["guardrailpp_keep_dense_gap"] = 1.0 - util_gap
+
+                # ── Scalar utility head (only trained under scalar_benefit
+                #     supervision; kept for the ablation) ──
+                if "utility_score" in guard_raw:
+                    utility = float(guard_raw["utility_score"][i].item())
+                    utility = max(0.0, min(1.0, utility))
+                    row["guardrailpp_utility_scalar"] = utility
+
+                # ── Primary `guardrailpp_utility` alias used by plots /
+                #     legacy tables: picks dense_gap if present, else
+                #     dense_bce, else scalar. Never the dead scalar head. ──
+                if "guardrailpp_utility_dense_gap" in row:
+                    primary = row["guardrailpp_utility_dense_gap"]
+                elif "guardrailpp_utility_dense_bce" in row:
+                    primary = row["guardrailpp_utility_dense_bce"]
+                elif "guardrailpp_utility_scalar" in row:
+                    primary = row["guardrailpp_utility_scalar"]
+                else:
+                    primary = None
+                if primary is not None:
+                    row["guardrailpp_utility"] = primary
+                    row["guardrailpp_keep"] = 1.0 - primary
+                    row["guardrail_risk"] = primary
+                    row["guardrail_keep"] = 1.0 - primary
 
             if teacher_preds is not None:
                 t_pred = teacher_preds[i]
@@ -1424,8 +1394,17 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if "mc_entropy" in df_fail.columns:
         df_fail["mc_dropout_fail_score"] = df_fail["mc_entropy"].astype(float)
         score_cols["mc_dropout"] = "mc_dropout_fail_score"
+    # `guardrail_risk` is aliased to the primary dense utility (dense_gap
+    # fallback dense_bce fallback scalar) so this row always uses the trained
+    # column when available.
     if "guardrail_risk" in df_fail.columns:
         score_cols["guardrail"] = "guardrail_risk"
+    # Register the dense heads as their own rows so the CSV carries both in
+    # addition to the aliased "guardrail" row.
+    if "guardrailpp_utility_dense_bce" in df_fail.columns:
+        score_cols["dense_bce"] = "guardrailpp_utility_dense_bce"
+    if "guardrailpp_utility_dense_gap" in df_fail.columns:
+        score_cols["dense_gap"] = "guardrailpp_utility_dense_gap"
     if "oracle_fail" in df_fail.columns:
         score_cols["oracle"] = "oracle_fail"
 
@@ -1465,6 +1444,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "teacher_backbone": args.teacher_backbone or "",
         "guardrail_ckpt": args.guardrail_ckpt or "",
         "guardrail_student_name": args.guardrail_student_name or "",
+        "guardrail_supervision_type": (
+            getattr(guardrail, "_supervision_type", "") if guardrail is not None else ""
+        ),
+        "guardrail_use_student_features": (
+            int(getattr(guardrail, "_use_student_features", False))
+            if guardrail is not None else 0
+        ),
         "num_images": int(len(df_img)),
         "num_classes": cfg.num_classes,
         "temperature": float(args.temperature),
