@@ -35,7 +35,8 @@ fi
 [ ! -f "$SRC_DIR/student_skd.ckpt" ] && echo "ERROR: $SRC_DIR/student_skd.ckpt not found." && exit 1
 
 SUPERVISION_TYPE="${SUPERVISION_TYPE:-dense_multi}"
-OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_JOB_ID}"
+SEED="${SEED:-42}"
+OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_s${SEED}_j${SLURM_JOB_ID}"
 
 HF_HOME=/scratch/gautschi/manors/hf_cache \
 python -u src/train/run.py train \
@@ -53,6 +54,7 @@ python -u src/train/run.py train \
   --dense-gap-weight 1.0 \
   --corruption-prob 0.5 \
   --use-student-features \
+  --seed "$SEED" \
   --log-every 20
 
-echo "[DONE] Guardrail ${SUPERVISION_TYPE} complete.  Output: $OUT  Source: $SRC_DIR"
+echo "[DONE] Guardrail ${SUPERVISION_TYPE} seed=${SEED} complete.  Output: $OUT  Source: $SRC_DIR"
