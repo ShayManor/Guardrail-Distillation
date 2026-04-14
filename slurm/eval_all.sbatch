@@ -10,7 +10,12 @@
 #SBATCH -e /scratch/gautschi/manors/logs/eval-all_%j.err
 
 set -euo pipefail
+# Line-buffer stdout/stderr so SLURM logs show the last command before any crash.
+exec > >(stdbuf -oL cat) 2> >(stdbuf -oL cat >&2)
+trap 'rc=$?; echo "FAILED rc=$rc at line $LINENO: $BASH_COMMAND" >&2' ERR
+set -x
 source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+set +x
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
@@ -70,12 +75,22 @@ fi
 run_one () {
   local DATASET="$1" BB="$2" LABEL="$3" GDIR="$4"
   local MIT_STUDENT SKD_DIR STUDENT_CKPT GUARDRAIL_CKPT EVAL_DIR DOMAIN
-  MIT_STUDENT=$(find_mit "$BB")
-  SKD_DIR=$(find_skd "$BB")
-  [ -z "$SKD_DIR" ] && echo "[skip] no SKD for $BB" && return 0
+  MIT_STUDENT=$(find_mit "$BB" || true)
+  SKD_DIR=$(find_skd "$BB" || true)
+  if [ -z "$MIT_STUDENT" ]; then
+    echo "[skip] no mit-$BB backbone dir resolved on this node" >&2
+    return 0
+  fi
+  if [ -z "$SKD_DIR" ]; then
+    echo "[skip] no SKD dir for $BB" >&2
+    return 0
+  fi
   STUDENT_CKPT="$SKD_DIR/student_skd.ckpt"
   GUARDRAIL_CKPT="$GDIR/guardrail.ckpt"
-  [ ! -f "$STUDENT_CKPT" ] && echo "[skip] $STUDENT_CKPT missing" && return 0
+  if [ ! -f "$STUDENT_CKPT" ]; then
+    echo "[skip] $STUDENT_CKPT missing" >&2
+    return 0
+  fi
   EVAL_DIR="$REPO/paper_eval_${DATASET}_${BB}_${GDIR##*/}"
 
   if [ "$DATASET" = "city" ]; then
