@@ -1,6 +1,7 @@
 """Shared utilities: metrics, checkpointing, schedulers."""
 
 import os
+import random
 import time
 import torch
 import torch.nn as nn
@@ -8,6 +9,43 @@ import numpy as np
 from contextlib import contextmanager
 
 IGNORE_INDEX = 255
+
+
+def set_seed(seed: int) -> None:
+    """Seed python, numpy and torch (cpu + cuda) RNGs.
+
+    Call once at the top of a training pipeline before any model init,
+    dataloader construction, or augmentation sampling. This covers:
+      - random.random / random.choice  (corruption family + severity sampling
+        in train_guardrail.py)
+      - np.random.*                    (segmentation dataset augmentation)
+      - torch.manual_seed              (weight init, dropout, DataLoader
+        shuffle generator default state)
+      - torch.cuda.manual_seed_all     (GPU kernels that honor manual seed)
+
+    Does NOT set ``torch.use_deterministic_algorithms(True)`` — that would
+    require CUBLAS env tweaks and break some kernels. Bitwise reproducibility
+    is not the goal; seed-controlled variance for multi-seed bars is.
+    """
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def seed_worker(worker_id: int) -> None:
+    """``DataLoader`` worker_init_fn that reseeds each worker deterministically.
+
+    PyTorch already forks each worker with ``base_seed = initial_seed + wid``
+    for torch, but python ``random`` and ``numpy`` are not re-seeded, so
+    augmentation draws that use them would be identical across workers and
+    nondeterministic across runs. This pins both.
+    """
+    base = torch.initial_seed() % (2**32)
+    np.random.seed(base)
+    random.seed(base)
 
 
 # ── Metrics ──

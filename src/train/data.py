@@ -115,7 +115,15 @@ class HFSegmentationDataset(Dataset):
 
 
 def build_dataloaders(cfg):
-    """Build train/val dataloaders from config."""
+    """Build train/val dataloaders from config.
+
+    Uses ``cfg.seed`` to pin:
+      - the train shuffle permutation (via a torch.Generator)
+      - each worker's python/numpy/torch RNG state (via seed_worker)
+    The val loader is unshuffled and does not need a generator.
+    """
+    from utils import seed_worker
+
     path = cfg.dataset_path
 
     if path.startswith("hf://"):
@@ -128,16 +136,22 @@ def build_dataloaders(cfg):
         train_ds = CityscapesDataset(path, "train", cfg.crop_size)
         val_ds = CityscapesDataset(path, "val", cfg.crop_size)
 
+    train_gen = torch.Generator()
+    train_gen.manual_seed(int(cfg.seed))
+
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, shuffle=True,
         num_workers=cfg.num_workers, pin_memory=cfg.pin_memory, drop_last=True,
         persistent_workers=cfg.num_workers > 0,
         prefetch_factor=4 if cfg.num_workers > 0 else None,
+        generator=train_gen,
+        worker_init_fn=seed_worker,
     )
     val_loader = DataLoader(
         val_ds, batch_size=cfg.batch_size, shuffle=False,
         num_workers=cfg.num_workers, pin_memory=cfg.pin_memory,
         persistent_workers=cfg.num_workers > 0,
         prefetch_factor=4 if cfg.num_workers > 0 else None,
+        worker_init_fn=seed_worker,
     )
     return train_loader, val_loader

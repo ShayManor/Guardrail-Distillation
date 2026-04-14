@@ -198,12 +198,18 @@ def run_sanity_eval(args, cfg, checkpoint_map):
 
 def run_train_pipeline(args, cfg):
     from models import GuardrailPlusHead
-    from utils import load_checkpoint
+    from utils import load_checkpoint, set_seed
     from data import build_dataloaders
     from train_supervised import train_supervised
     from train_kd import train_kd
     from train_skd import train_skd
     from train_guardrail import train_guardrail
+
+    # Seed every RNG we control, before dataloader + model init. Any stage that
+    # runs inside this invocation (sup/kd/skd/guardrail) consumes entropy from
+    # this single seed — a second invocation with the same --seed reproduces it.
+    set_seed(cfg.seed)
+    print(f"[run] seed={cfg.seed}")
 
     train_loader, val_loader = build_dataloaders(cfg)
     teacher = load_teacher(args, cfg)
