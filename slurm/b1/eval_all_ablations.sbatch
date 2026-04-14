@@ -33,7 +33,7 @@ echo "[auto] SKD dir: $SKD_DIR"
 
 # Resolve newest guardrail dir per supervision mode
 declare -A GUARD_DIRS
-for MODE in dense_multi dense_disagree dense_gap scalar; do
+for MODE in dense_multi dense_disagree dense_gap scalar_benefit; do
   D=$(ls -td runs/mit-${MODEL}_guard_${MODE}_j*/guardrail.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
   if [ -z "$D" ] || [ ! -f "$D/guardrail.ckpt" ]; then
     echo "WARNING: no guardrail checkpoint for mode=$MODE — skipping"

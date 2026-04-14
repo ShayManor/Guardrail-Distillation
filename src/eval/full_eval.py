@@ -1111,14 +1111,29 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     row["guardrailpp_utility_scalar"] = utility
 
                 # ── Primary `guardrailpp_utility` alias used by plots /
-                #     legacy tables: picks dense_gap if present, else
-                #     dense_bce, else scalar. Never the dead scalar head. ──
-                if "guardrailpp_utility_dense_gap" in row:
-                    primary = row["guardrailpp_utility_dense_gap"]
-                elif "guardrailpp_utility_dense_bce" in row:
-                    primary = row["guardrailpp_utility_dense_bce"]
-                elif "guardrailpp_utility_scalar" in row:
-                    primary = row["guardrailpp_utility_scalar"]
+                #     legacy tables. Key off the checkpoint's supervision_type
+                #     so dense_disagree picks its trained dense_bce head and
+                #     dense_gap picks its trained dense_gap head, rather than
+                #     falling through to whichever untrained output the model
+                #     still emits from shared weights. ──
+                sup_type = getattr(guardrail, "_supervision_type", "") or ""
+                dense_gap_val = row.get("guardrailpp_utility_dense_gap")
+                dense_bce_val = row.get("guardrailpp_utility_dense_bce")
+                scalar_val = row.get("guardrailpp_utility_scalar")
+                if sup_type == "dense_gap" and dense_gap_val is not None:
+                    primary = dense_gap_val
+                elif sup_type == "dense_disagree" and dense_bce_val is not None:
+                    primary = dense_bce_val
+                elif sup_type == "scalar_benefit" and scalar_val is not None:
+                    primary = scalar_val
+                elif sup_type == "dense_multi" and dense_gap_val is not None:
+                    primary = dense_gap_val
+                elif dense_gap_val is not None:
+                    primary = dense_gap_val
+                elif dense_bce_val is not None:
+                    primary = dense_bce_val
+                elif scalar_val is not None:
+                    primary = scalar_val
                 else:
                     primary = None
                 if primary is not None:
