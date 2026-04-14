@@ -905,6 +905,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if guardrail is not None:
         guardrail.eval()
 
+    eval_ctx = torch.inference_mode()
+    eval_ctx.__enter__()
     for batch_idx, batch in enumerate(loader):
         images, labels, metas = unpack_batch(batch, batch_idx, seen_images)
         images = images.to(cfg.device)
@@ -1188,6 +1190,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         seen_images += bsz
         if seen_images % max(args.progress_every, 1) < bsz:
             print(f"[eval] processed {seen_images} images")
+
+    eval_ctx.__exit__(None, None, None)
 
     if not per_image_rows:
         raise RuntimeError("No per-image rows were produced. Check your dataloader and model adapter.")
