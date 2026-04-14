@@ -122,7 +122,7 @@ def build_dataloaders(cfg):
       - each worker's python/numpy/torch RNG state (via seed_worker)
     The val loader is unshuffled and does not need a generator.
     """
-    from utils import seed_worker
+    from src.train.utils import seed_worker
 
     path = cfg.dataset_path
 
