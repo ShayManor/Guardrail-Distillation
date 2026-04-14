@@ -138,7 +138,10 @@ echo "[combine] merging all paper_eval_* CSVs"
 echo "============================================"
 
 OUT=src/analysis/combined_all
-rm -rf "$OUT"
+rm -rf "$OUT" \
+       src/analysis/cs_b0_b2_eval \
+       src/analysis/acdc_b0_b2_eval \
+       src/analysis/combined_ablation_b1
 mkdir -p "$OUT"
 
 python - "$OUT" <<'PY'
@@ -203,4 +206,22 @@ for table in tables:
     print(f"{table}: {len(combined)} rows, {combined.shape[1]} cols")
 PY
 
-echo "[DONE] All evals complete. Combined CSVs under src/analysis/combined_all/"
+echo "[DONE] All runs complete. Combined CSVs under src/analysis/combined_all/"
+
+echo ""
+echo "============================================"
+echo "[git] committing + pushing combined_all/"
+echo "============================================"
+cd "$REPO"
+git add -A src/analysis/combined_all \
+           src/analysis/cs_b0_b2_eval \
+           src/analysis/acdc_b0_b2_eval \
+           src/analysis/combined_ablation_b1 2>/dev/null || true
+if git diff --cached --quiet; then
+  echo "[git] no changes to commit"
+else
+  STAMP=$(date -u +%Y-%m-%dT%H:%MZ)
+  git -c user.name="cluster-bot" -c user.email="cluster@local" \
+      commit -m "analysis: refresh combined_all/ ($STAMP, job ${SLURM_JOB_ID:-local})"
+  git push origin HEAD || echo "[git] push failed (non-fatal)"
+fi
