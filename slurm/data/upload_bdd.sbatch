@@ -43,39 +43,44 @@ SRC="$BDD_ROOT/seg"
 [ -d "$SRC/images/val" ]  || { echo "ERROR: $SRC/images/val missing — run prep_bdd.sbatch first"; exit 1; }
 [ -d "$SRC/labels/val" ]  || { echo "ERROR: $SRC/labels/val missing — run prep_bdd.sbatch first"; exit 1; }
 
-pip install -q -U "huggingface_hub[cli]"
+# Pin hub <1.0: v1.x renamed the CLI to `hf`, removed update_repo_visibility,
+# and is incompatible with the transformers pinned in this venv.
+pip install -q "huggingface_hub>=0.34,<1.0"
 
 # Auth: prefer HF_TOKEN env, fall back to cached login under $HF_HOME
 if [ -n "${HF_TOKEN:-}" ]; then
   huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
 fi
 
-# Create the repo private-by-default (no-op if it already exists)
-huggingface-cli repo create "${HF_REPO##*/}" \
-  --type dataset \
-  --organization "${HF_REPO%%/*}" \
-  --private \
-  -y || true
+# Create + force-private + upload all via the Python API so we don't depend
+# on whichever CLI shim (huggingface-cli vs hf) happens to be on PATH.
+export HF_REPO BDD_ROOT
+python - <<'PY'
+import os
+from huggingface_hub import HfApi, create_repo
 
-# Defensive: if the repo already existed as public, flip it to private.
-python - <<PY
-from huggingface_hub import HfApi
+repo = os.environ["HF_REPO"]
+root = os.environ["BDD_ROOT"]
 api = HfApi()
+
+create_repo(repo_id=repo, repo_type="dataset", private=True, exist_ok=True)
+print(f"[ok] repo ensured: {repo} (private=True)")
+
+# Defensive: if it pre-existed as public, flip it. (0.34+ API.)
 try:
-    api.update_repo_visibility(repo_id="${HF_REPO}", private=True, repo_type="dataset")
-    print("[ok] repo visibility forced to private")
+    api.update_repo_settings(repo_id=repo, repo_type="dataset", private=True)
+    print("[ok] repo settings forced private")
 except Exception as e:
-    print(f"[warn] could not force private (may already be private): {e}")
+    print(f"[warn] update_repo_settings failed: {e}")
+
+api.upload_large_folder(
+    repo_id=repo,
+    repo_type="dataset",
+    folder_path=root,
+    allow_patterns=["seg/images/**", "seg/labels/**"],
+)
+print(f"[DONE] uploaded seg/images + seg/labels from {root} -> {repo}")
 PY
-
-cd "$BDD_ROOT"
-
-# Upload. The paper repo only needs images + trainIds labels — skip
-# color_labels/ and any top-level label_release JSONs.
-huggingface-cli upload "$HF_REPO" . . \
-  --repo-type dataset \
-  --include "seg/images/**" "seg/labels/**" \
-  --commit-message "BDD100K 10K seg subset (solesensei mirror) — images + Cityscapes-19 trainIds labels"
 
 echo "[DONE] pushed $SRC -> https://huggingface.co/datasets/$HF_REPO"
 echo "       pull later with:"
