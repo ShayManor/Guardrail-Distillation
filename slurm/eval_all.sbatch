@@ -38,43 +38,58 @@ find_skd () {
     | head -1 | xargs -r dirname
 }
 
-# Collect (backbone, label, guard_dir) triples.
-# b0 / b2: newest guardrail run regardless of naming (legacy names like
-#          mit-b0_guard_j<id> OR new names like mit-b0_guard_dense_multi_j<id>).
-# b1: one entry per supervision mode that has a checkpoint on disk.
+# Discover every trained guardrail checkpoint on disk and dedupe by
+# (backbone, mode, seed). The multi-seed sbatches emit dirs named:
+#     runs/mit-b1_guard_dense_multi_s137_j9275012/
+# Single-seed sbatches emit:
+#     runs/mit-b1_guard_dense_multi_j9249359/          (-> seed=42 by default)
+# Legacy dirs:
+#     runs/mit-b0_guard_j9249359/                      (-> mode=unknown, seed=42)
+#
+# For each (backbone, mode, seed), keep the newest by mtime so a resubmit
+# shadows the prior run automatically.
 declare -a JOBS
+mapfile -t JOBS < <(python3 - <<'PY'
+import os, re, glob
+pat = re.compile(
+    r"^runs/mit-(?P<bb>b[012])_guard"
+    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit))?"
+    r"(?:_s(?P<seed>\d+))?"
+    r"_j(?P<jobid>\d+)$"
+)
+candidates = []
+for d in glob.glob("runs/mit-b*_guard*"):
+    if not os.path.isfile(os.path.join(d, "guardrail.ckpt")):
+        continue
+    m = pat.match(d)
+    if not m:
+        continue
+    candidates.append((os.path.getmtime(d), d, m.groupdict()))
+candidates.sort(reverse=True)  # newest first
 
-add_job () {
-  local bb="$1" label="$2" dir="$3"
-  [ -z "$dir" ] && return 0
-  [ ! -f "$dir/guardrail.ckpt" ] && return 0
-  JOBS+=("${bb}|${label}|${dir}")
-  echo "[auto] ${bb}/${label} -> $dir"
-}
-
-# b0 and b2: newest guardrail ckpt (any mode/seed label). The glob
-# `runs/mit-b0_guard_*/guardrail.ckpt` matches legacy names like
-# `mit-b0_guard_j9249359`, new names like `mit-b0_guard_dense_multi_s42_j9300000`,
-# and seeded multi-seed names.
-for BB in b0 b2; do
-  NEW=$(ls -td runs/mit-${BB}_guard_*/guardrail.ckpt 2>/dev/null | head -1 | xargs -r dirname || true)
-  add_job "$BB" "latest" "$NEW"
-done
-
-# b1: one newest per supervision mode. The `${MODE}_*` glob matches both
-# `${MODE}_j<id>` (legacy) and `${MODE}_s<seed>_j<id>` (seeded) forms.
-for MODE in dense_multi dense_gap dense_disagree scalar_benefit; do
-  D=$(ls -td runs/mit-b1_guard_${MODE}_*/guardrail.ckpt 2>/dev/null | head -1 | xargs -r dirname || true)
-  add_job "b1" "$MODE" "$D"
-done
+seen = set()
+for _, d, g in candidates:
+    bb   = g["bb"]
+    mode = g["mode"] or "unknown"
+    seed = g["seed"] or "42"
+    key = (bb, mode, seed)
+    if key in seen:
+        continue
+    seen.add(key)
+    print(f"{bb}|{mode}|{seed}|{d}")
+PY
+)
 
 if [ ${#JOBS[@]} -eq 0 ]; then
   echo "ERROR: no guardrail checkpoints found" && exit 1
 fi
 
+echo "[discover] ${#JOBS[@]} guard checkpoints:"
+for J in "${JOBS[@]}"; do echo "  $J"; done
+
 run_one () {
-  local DATASET="$1" BB="$2" LABEL="$3" GDIR="$4"
-  local MIT_STUDENT SKD_DIR STUDENT_CKPT GUARDRAIL_CKPT EVAL_DIR DOMAIN
+  local DATASET="$1" BB="$2" MODE="$3" SEED="$4" GDIR="$5"
+  local MIT_STUDENT SKD_DIR STUDENT_CKPT GUARDRAIL_CKPT EVAL_DIR DOMAIN TAG
   MIT_STUDENT=$(find_mit "$BB" || true)
   SKD_DIR=$(find_skd "$BB" || true)
   if [ -z "$MIT_STUDENT" ]; then
@@ -91,15 +106,24 @@ run_one () {
     echo "[skip] $STUDENT_CKPT missing" >&2
     return 0
   fi
+  TAG="${MODE}_s${SEED}"
   EVAL_DIR="$REPO/paper_eval_${DATASET}_${BB}_${GDIR##*/}"
+
+  # Idempotence: if this guard dir has already been evaluated (runs.csv
+  # present) skip unless the caller forces a rerun. Lets us add a new seed
+  # without re-running 20+ existing evals.
+  if [ -f "$EVAL_DIR/csv/runs.csv" ] && [ -z "${FORCE_EVAL:-}" ]; then
+    echo "[skip] $DATASET $BB/$TAG already evaluated at $EVAL_DIR (set FORCE_EVAL=1 to redo)"
+    return 0
+  fi
 
   if [ "$DATASET" = "city" ]; then
     echo "============================================"
-    echo "[CS  ] $BB/$LABEL   out=$EVAL_DIR"
+    echo "[CS  ] $BB/$TAG   out=$EVAL_DIR"
     echo "============================================"
     HF_HOME=/scratch/gautschi/manors/hf_cache \
     python -u src/eval/full_eval.py eval \
-      --run-id "city_${BB}_${LABEL}" \
+      --run-id "city_${BB}_${TAG}" \
       --dataset-name cityscapes \
       --dataset-path "$REPO/data/cityscapes" \
       --split val \
@@ -117,11 +141,11 @@ run_one () {
   else
     for DOMAIN in fog night rain snow all; do
       echo "============================================"
-      echo "[ACDC] $BB/$LABEL domain=$DOMAIN   out=$EVAL_DIR"
+      echo "[ACDC] $BB/$TAG domain=$DOMAIN   out=$EVAL_DIR"
       echo "============================================"
       HF_HOME=/scratch/gautschi/manors/hf_cache \
       python -u src/eval/full_eval.py eval \
-        --run-id "acdc_${BB}_${LABEL}_${DOMAIN}" \
+        --run-id "acdc_${BB}_${TAG}_${DOMAIN}" \
         --dataset-name acdc \
         --dataset-path "$REPO/data/acdc" \
         --split val \
@@ -142,9 +166,9 @@ run_one () {
 }
 
 for J in "${JOBS[@]}"; do
-  IFS='|' read -r BB LABEL DIR <<< "$J"
-  run_one city "$BB" "$LABEL" "$DIR"
-  run_one acdc "$BB" "$LABEL" "$DIR"
+  IFS='|' read -r BB MODE SEED DIR <<< "$J"
+  run_one city "$BB" "$MODE" "$SEED" "$DIR"
+  run_one acdc "$BB" "$MODE" "$SEED" "$DIR"
 done
 
 echo ""
@@ -168,20 +192,28 @@ root = pathlib.Path(".")
 tables = ["runs","per_image","per_class","risk_coverage","teacher_budget",
           "calibration_bins","confident_failures","latency_samples"]
 
-# Accept both legacy (no mode in name) and new (with mode) dir shapes.
+# Accept legacy (no mode, no seed), single-seed (mode but no seed), and
+# multi-seed (mode + seed) dir shapes. Anchor mode to the known vocabulary
+# so "dense_multi_s137" isn't swallowed as mode="dense_multi_s137".
 dir_re = re.compile(
     r"^paper_eval_(?P<dataset>city|acdc)_(?P<backbone>b[012])_"
-    r"mit-b[012]_guard(?:_(?P<mode>.+?))?_j(?P<jobid>\d+)$"
+    r"mit-b[012]_guard"
+    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit))?"
+    r"(?:_s(?P<seed>\d+))?"
+    r"_j(?P<jobid>\d+)$"
 )
 
 dirs = []
 for d in sorted(root.glob("paper_eval_*")):
     m = dir_re.match(d.name)
     if not m:
+        print(f"[warn] skipping unparseable dir: {d.name}")
         continue
     meta = m.groupdict()
     if meta["mode"] is None:
         meta["mode"] = "unknown"
+    if meta["seed"] is None:
+        meta["seed"] = "42"  # single-seed legacy default
     dirs.append((d, meta))
 
 for table in tables:
@@ -194,8 +226,10 @@ for table in tables:
             df = pd.read_csv(csv)
         except pd.errors.EmptyDataError:
             continue
-        # Prefer the supervision_type logged inside runs.csv when we have it,
-        # because the dir name for legacy b0/b2 runs is "unknown".
+        # Prefer the supervision_type logged inside runs.csv when available
+        # (legacy b0/b2 dirs have mode="unknown" from the regex). Never let
+        # this overwrite a seed parsed from the dir name.
+        local_meta = dict(meta)
         if table != "runs":
             runs_csv = d / "csv" / "runs.csv"
             if runs_csv.is_file():
@@ -204,14 +238,15 @@ for table in tables:
                     if "guardrail_supervision_type" in rdf.columns and len(rdf):
                         val = str(rdf["guardrail_supervision_type"].iloc[0]).strip()
                         if val:
-                            meta["mode"] = val
+                            local_meta["mode"] = val
                 except Exception:
                     pass
-        df.insert(0, "dataset", meta["dataset"])
-        df.insert(1, "backbone", meta["backbone"])
-        df.insert(2, "supervision_type", meta["mode"])
-        df.insert(3, "guard_jobid", meta["jobid"])
-        df.insert(4, "source_dir", d.name)
+        df.insert(0, "dataset", local_meta["dataset"])
+        df.insert(1, "backbone", local_meta["backbone"])
+        df.insert(2, "supervision_type", local_meta["mode"])
+        df.insert(3, "seed", int(local_meta["seed"]))
+        df.insert(4, "guard_jobid", local_meta["jobid"])
+        df.insert(5, "source_dir", d.name)
         frames.append(df)
     if not frames:
         print(f"{table}: 0 rows")
