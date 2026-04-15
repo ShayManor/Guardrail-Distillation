@@ -137,6 +137,7 @@ echo "[counts] val:   $N_IMG_VAL img / $N_LBL_VAL lbl"
 
 # Verify labels are 19-class trainIds (values in {0..18, 255}), not the
 # 34-class Cityscapes labelIds and not RGB color_labels. Sample 20 val pngs.
+export BDD_SCRATCH
 python - <<'PY'
 import os, random, numpy as np
 from PIL import Image
