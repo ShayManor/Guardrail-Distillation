@@ -84,6 +84,11 @@ for d in glob.glob("runs/mit-b*_guard*"):
     m = pat.match(d)
     if not m:
         continue
+    # Skip legacy pre-refactor checkpoints (no supervision mode in the dir
+    # name). Their state_dicts still have the removed margin_head/family_head
+    # keys and fail strict load in full_eval.py::build_guardrail_model.
+    if m.group("mode") is None:
+        continue
     candidates.append((os.path.getmtime(d), d, m.groupdict()))
 candidates.sort(reverse=True)  # newest first
 
@@ -264,9 +269,11 @@ for d in sorted(root.glob("paper_eval_*")):
         continue
     meta = m.groupdict()
     if meta["mode"] is None:
-        meta["mode"] = "unknown"
+        # Legacy pre-refactor dir — skip entirely.
+        print(f"[skip legacy] {d.name}")
+        continue
     if meta["seed"] is None:
-        meta["seed"] = "42"  # single-seed legacy default
+        meta["seed"] = "42"  # single-seed default for named-mode dirs
     dirs.append((d, meta))
 
 for table in tables:
@@ -294,6 +301,12 @@ for table in tables:
                             local_meta["mode"] = val
                 except Exception:
                     pass
+        # Drop any columns we're about to inject so .insert() doesn't collide
+        # with pre-existing ones written by full_eval.py (e.g. runs.csv already
+        # has `seed`, `dataset`, `backbone`).
+        injected = ["dataset", "backbone", "supervision_type",
+                    "seed", "guard_jobid", "source_dir"]
+        df = df.drop(columns=[c for c in injected if c in df.columns])
         df.insert(0, "dataset", local_meta["dataset"])
         df.insert(1, "backbone", local_meta["backbone"])
         df.insert(2, "supervision_type", local_meta["mode"])
