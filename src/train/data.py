@@ -143,6 +143,59 @@ class IDDDataset(Dataset):
         return img, lbl
 
 
+class BDDDataset(Dataset):
+    """BDD100K Segmentation loader (Kaggle solesensei mirror).
+
+    Expects the tree produced by slurm/data/prep_bdd.sbatch:
+        <root>/seg/images/{train,val}/*.jpg
+        <root>/seg/labels/{train,val}/*_train_id.png
+
+    Labels ship as Cityscapes 19-class trainIds (values in {0..18, 255}),
+    so this class applies an identity label map — same pattern as IDDDataset.
+    """
+
+    def __init__(self, root, split="val", crop_size=512):
+        self.root = Path(root)
+        self.split = split
+        self.crop_size = crop_size
+
+        img_dir = self.root / "seg" / "images" / split
+        lbl_dir = self.root / "seg" / "labels" / split
+
+        self.images = sorted(img_dir.glob("*.jpg"))
+        self.labels = [lbl_dir / f"{p.stem}_train_id.png" for p in self.images]
+
+        missing = [p for p in self.labels if not p.exists()]
+        assert not missing, (
+            f"BDDDataset: {len(missing)} labels missing (e.g. {missing[:3]}). "
+            "Did prep_bdd.sbatch finish?"
+        )
+        assert len(self.images) == len(self.labels) and self.images, (
+            f"BDDDataset: no images under {img_dir}"
+        )
+
+        self.normalize = T.Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        )
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img = cv2.cvtColor(cv2.imread(str(self.images[idx])), cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(img)
+        lbl = Image.fromarray(cv2.imread(str(self.labels[idx]), cv2.IMREAD_UNCHANGED))
+
+        val_size = (self.crop_size, self.crop_size * 2)
+        img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
+        lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
+
+        img = TF.to_tensor(img)
+        img = self.normalize(img)
+        lbl = torch.from_numpy(np.array(lbl)).long()
+        return img, lbl
+
+
 class HFSegmentationDataset(Dataset):
     """Load a segmentation dataset from HuggingFace."""
 

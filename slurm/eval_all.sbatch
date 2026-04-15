@@ -187,7 +187,7 @@ run_one () {
         --batch-size 4 \
         --num-workers 4
     done
-  else  # idd
+  elif [ "$DATASET" = "idd" ]; then
     if [ ! -d "$REPO/data/idd/leftImg8bit/val" ]; then
       echo "[skip] $DATASET $BB/$TAG — $REPO/data/idd not staged yet"
       return 0
@@ -212,6 +212,31 @@ run_one () {
       --output-dir "$EVAL_DIR" \
       --batch-size 4 \
       --num-workers 4
+  else  # bdd
+    if [ ! -d "$REPO/data/bdd100k/seg/images/val" ]; then
+      echo "[skip] $DATASET $BB/$TAG — $REPO/data/bdd100k not staged yet"
+      return 0
+    fi
+    echo "============================================"
+    echo "[BDD ] $BB/$TAG   out=$EVAL_DIR"
+    echo "============================================"
+    try_eval "bdd $BB/$TAG" env HF_HOME=/scratch/gautschi/manors/hf_cache \
+    python -u src/eval/full_eval.py eval \
+      --run-id "bdd_${BB}_${TAG}" \
+      --dataset-name bdd \
+      --dataset-path "$REPO/data/bdd100k" \
+      --split val \
+      --student-name student_skd \
+      --train-method skd \
+      --student-backbone "$MIT_STUDENT" \
+      --student-ckpt "$STUDENT_CKPT" \
+      --teacher-backbone "$TEACHER" \
+      --guardrail-ckpt "$GUARDRAIL_CKPT" \
+      --guardrail-student-name student_skd \
+      --mc-dropout-passes 4 \
+      --output-dir "$EVAL_DIR" \
+      --batch-size 4 \
+      --num-workers 4
   fi
 }
 
@@ -220,6 +245,7 @@ for J in "${JOBS[@]}"; do
   run_one city "$BB" "$MODE" "$SEED" "$DIR"
   run_one acdc "$BB" "$MODE" "$SEED" "$DIR"
   run_one idd  "$BB" "$MODE" "$SEED" "$DIR"
+  run_one bdd  "$BB" "$MODE" "$SEED" "$DIR"
 done
 
 echo ""
@@ -254,7 +280,7 @@ tables = ["runs","per_image","per_class","risk_coverage","teacher_budget",
 # multi-seed (mode + seed) dir shapes. Anchor mode to the known vocabulary
 # so "dense_multi_s137" isn't swallowed as mode="dense_multi_s137".
 dir_re = re.compile(
-    r"^paper_eval_(?P<dataset>city|acdc|idd)_(?P<backbone>b[012])_"
+    r"^paper_eval_(?P<dataset>city|acdc|idd|bdd)_(?P<backbone>b[012])_"
     r"mit-b[012]_guard"
     r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit))?"
     r"(?:_s(?P<seed>\d+))?"

@@ -474,11 +474,14 @@ def build_eval_loader(cfg: EvalConfig):
     - cityscapes: delegates to project's build_dataloaders
     - acdc: builds ACDCDataset directly (fog/night/rain/snow/all)
     - idd:  builds IDDDataset directly (cs19 trainIds, identity label map)
+    - bdd:  builds BDDDataset directly (cs19 trainIds, identity label map)
     """
     if cfg.dataset_name == "acdc":
         return _build_acdc_loader(cfg)
     if cfg.dataset_name == "idd":
         return _build_idd_loader(cfg)
+    if cfg.dataset_name == "bdd":
+        return _build_bdd_loader(cfg)
 
     # ── Cityscapes (default) ─────────────────────────────────────────────
     try:
@@ -527,6 +530,21 @@ def _build_idd_loader(cfg: EvalConfig):
 
     ds = IDDDataset(cfg.dataset_path, split=cfg.split, crop_size=512)
     print(f"[IDD] {cfg.split}: {len(ds)} images")
+    return torch.utils.data.DataLoader(
+        ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+    )
+
+
+def _build_bdd_loader(cfg: EvalConfig):
+    """Build a DataLoader for BDD100K Segmentation (cs19 trainIds)."""
+    from src.train.data import BDDDataset
+
+    ds = BDDDataset(cfg.dataset_path, split=cfg.split, crop_size=512)
+    print(f"[BDD] {cfg.split}: {len(ds)} images")
     return torch.utils.data.DataLoader(
         ds,
         batch_size=cfg.batch_size,
