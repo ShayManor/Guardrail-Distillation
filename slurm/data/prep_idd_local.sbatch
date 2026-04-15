@@ -2,10 +2,11 @@
 #SBATCH --job-name=prep-idd-local
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=96
+#SBATCH --cpus-per-task=64
 #SBATCH --time=04:00:00
 #SBATCH -A lilly-rob1
-#SBATCH -p highmem
+#SBATCH -p smallgpu
+#SBATCH --gres=gpu:1
 #SBATCH -o /scratch/gautschi/manors/logs/prep-idd-local_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/prep-idd-local_%j.err
 

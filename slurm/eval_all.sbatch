@@ -2,10 +2,11 @@
 #SBATCH --job-name=eval-all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=96
+#SBATCH --cpus-per-task=64
 #SBATCH --time=06:00:00
 #SBATCH -A lilly-rob1
-#SBATCH -p highmem
+#SBATCH --gres=gpu:1
+#SBATCH -p smallgpu
 #SBATCH -o /scratch/gautschi/manors/logs/eval-all_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/eval-all_%j.err
 
@@ -138,7 +139,7 @@ run_one () {
       --output-dir "$EVAL_DIR" \
       --batch-size 4 \
       --num-workers 4
-  else
+  elif [ "$DATASET" = "acdc" ]; then
     for DOMAIN in fog night rain snow all; do
       echo "============================================"
       echo "[ACDC] $BB/$TAG domain=$DOMAIN   out=$EVAL_DIR"
@@ -162,6 +163,31 @@ run_one () {
         --batch-size 4 \
         --num-workers 4
     done
+  else  # idd
+    if [ ! -d "$REPO/data/idd/leftImg8bit/val" ]; then
+      echo "[skip] $DATASET $BB/$TAG — $REPO/data/idd not staged yet"
+      return 0
+    fi
+    echo "============================================"
+    echo "[IDD ] $BB/$TAG   out=$EVAL_DIR"
+    echo "============================================"
+    HF_HOME=/scratch/gautschi/manors/hf_cache \
+    python -u src/eval/full_eval.py eval \
+      --run-id "idd_${BB}_${TAG}" \
+      --dataset-name idd \
+      --dataset-path "$REPO/data/idd" \
+      --split val \
+      --student-name student_skd \
+      --train-method skd \
+      --student-backbone "$MIT_STUDENT" \
+      --student-ckpt "$STUDENT_CKPT" \
+      --teacher-backbone "$TEACHER" \
+      --guardrail-ckpt "$GUARDRAIL_CKPT" \
+      --guardrail-student-name student_skd \
+      --mc-dropout-passes 4 \
+      --output-dir "$EVAL_DIR" \
+      --batch-size 4 \
+      --num-workers 4
   fi
 }
 
@@ -169,6 +195,7 @@ for J in "${JOBS[@]}"; do
   IFS='|' read -r BB MODE SEED DIR <<< "$J"
   run_one city "$BB" "$MODE" "$SEED" "$DIR"
   run_one acdc "$BB" "$MODE" "$SEED" "$DIR"
+  run_one idd  "$BB" "$MODE" "$SEED" "$DIR"
 done
 
 echo ""
@@ -196,7 +223,7 @@ tables = ["runs","per_image","per_class","risk_coverage","teacher_budget",
 # multi-seed (mode + seed) dir shapes. Anchor mode to the known vocabulary
 # so "dense_multi_s137" isn't swallowed as mode="dense_multi_s137".
 dir_re = re.compile(
-    r"^paper_eval_(?P<dataset>city|acdc)_(?P<backbone>b[012])_"
+    r"^paper_eval_(?P<dataset>city|acdc|idd)_(?P<backbone>b[012])_"
     r"mit-b[012]_guard"
     r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit))?"
     r"(?:_s(?P<seed>\d+))?"

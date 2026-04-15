@@ -78,6 +78,71 @@ class CityscapesDataset(Dataset):
         return img, lbl
 
 
+class IDDDataset(Dataset):
+    """India Driving Dataset (IDD Segmentation) loader.
+
+    Expects the tree produced by slurm/data/prep_idd_local.sbatch:
+        <root>/leftImg8bit/{train,val}/<drive_id>/*_leftImg8bit.png
+        <root>/gtFine/{train,val}/<drive_id>/*_gtFine_csTrainIds.png
+
+    The ``*_csTrainIds.png`` labels come from the AutoNUE toolkit and are
+    already mapped to the Cityscapes 19-class trainId ontology (values in
+    {0..18, 255}), so this class applies an **identity** label map — unlike
+    ``CityscapesDataset`` which applies the 34→19 remap at load time.
+    """
+
+    def __init__(self, root, split="val", crop_size=512):
+        self.root = Path(root)
+        self.split = split
+        self.crop_size = crop_size
+
+        img_dir = self.root / "leftImg8bit" / split
+        lbl_dir = self.root / "gtFine" / split
+
+        self.images = sorted(img_dir.rglob("*_leftImg8bit.png"))
+        # Pair each image with its matching cs19 label by stem swap.
+        self.labels = []
+        for img in self.images:
+            rel = img.relative_to(img_dir)
+            lbl = lbl_dir / rel.parent / img.name.replace(
+                "_leftImg8bit.png", "_gtFine_csTrainIds.png"
+            )
+            self.labels.append(lbl)
+
+        missing = [p for p in self.labels if not p.exists()]
+        assert not missing, (
+            f"IDDDataset: {len(missing)} labels missing (e.g. {missing[:3]}). "
+            "Did the AutoNUE toolkit remap finish?"
+        )
+        assert len(self.images) == len(self.labels) and self.images, (
+            f"IDDDataset: no images under {img_dir}"
+        )
+
+        self.normalize = T.Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        )
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img = cv2.cvtColor(cv2.imread(str(self.images[idx])), cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(img)
+        lbl = Image.fromarray(cv2.imread(str(self.labels[idx]), cv2.IMREAD_UNCHANGED))
+
+        # IDD is eval-only for us — use the same val resize as CityscapesDataset
+        # so the student input distribution matches what it saw during training.
+        val_size = (self.crop_size, self.crop_size * 2)
+        img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
+        lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
+
+        img = TF.to_tensor(img)
+        img = self.normalize(img)
+        lbl = torch.from_numpy(np.array(lbl)).long()
+        # Identity label map: values are already cs19 trainIds in {0..18, 255}.
+        return img, lbl
+
+
 class HFSegmentationDataset(Dataset):
     """Load a segmentation dataset from HuggingFace."""
 

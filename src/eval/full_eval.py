@@ -473,9 +473,12 @@ def build_eval_loader(cfg: EvalConfig):
     Build validation DataLoader.
     - cityscapes: delegates to project's build_dataloaders
     - acdc: builds ACDCDataset directly (fog/night/rain/snow/all)
+    - idd:  builds IDDDataset directly (cs19 trainIds, identity label map)
     """
     if cfg.dataset_name == "acdc":
         return _build_acdc_loader(cfg)
+    if cfg.dataset_name == "idd":
+        return _build_idd_loader(cfg)
 
     # ── Cityscapes (default) ─────────────────────────────────────────────
     try:
@@ -513,6 +516,24 @@ def build_eval_loader(cfg: EvalConfig):
 
     _, val_loader = build_dataloaders(project_cfg)
     return val_loader
+
+
+# ── IDD loader ───────────────────────────────────────────────────────────────
+
+
+def _build_idd_loader(cfg: EvalConfig):
+    """Build a DataLoader for India Driving Dataset (cs19 trainIds)."""
+    from src.train.data import IDDDataset
+
+    ds = IDDDataset(cfg.dataset_path, split=cfg.split, crop_size=512)
+    print(f"[IDD] {cfg.split}: {len(ds)} images")
+    return torch.utils.data.DataLoader(
+        ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+    )
 
 
 # ── ACDC dataset & loader ────────────────────────────────────────────────────
@@ -1800,7 +1821,7 @@ def build_parser() -> argparse.ArgumentParser:
     # eval mode
     p_eval = sub.add_parser("eval", help="Evaluate one trained student on one dataset split and append CSVs.")
     p_eval.add_argument("--run-id", required=True, help="Unique run key, e.g. cityscapes_val_b2_kd")
-    p_eval.add_argument("--dataset-name", required=True, help="cityscapes | acdc | dark_zurich | ...")
+    p_eval.add_argument("--dataset-name", required=True, help="cityscapes | acdc | idd")
     p_eval.add_argument("--dataset-path", required=True)
     p_eval.add_argument("--split", default="val")
     p_eval.add_argument("--domain", default="in_domain", help="in_domain | night | rain | fog | snow | ood")
