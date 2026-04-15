@@ -45,7 +45,22 @@ for t in "${TARS[@]}"; do echo "  $t"; done
 # ── 2. Extract both parts into a shared staging dir ─────────────────────────
 # IDD Part I and Part II both unpack to the same top-level dir (IDD_Segmentation
 # or idd20k_II) and merge naturally when extracted into a common parent.
-rm -rf "$STAGING"
+#
+# `rm -rf` on Lustre/NFS scratch intermittently fails with "Directory not empty"
+# due to delayed metadata ops / stale handles. Retry with a backoff and fall
+# back to find-delete, which tolerates the race better.
+robust_rmrf() {
+  local target="$1"
+  [ -e "$target" ] || return 0
+  for i in 1 2 3 4 5; do
+    rm -rf "$target" 2>/dev/null && return 0
+    find "$target" -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$target" 2>/dev/null && return 0
+    sleep $((i * 2))
+  done
+  rm -rf "$target"
+}
+robust_rmrf "$STAGING"
 mkdir -p "$STAGING"
 for t in "${TARS[@]}"; do
   echo "[extract] $t -> $STAGING"
@@ -60,10 +75,10 @@ echo "[ok] tree root: $TREE_ROOT"
 ls -la "$TREE_ROOT"
 
 # ── 3. Move into canonical location ─────────────────────────────────────────
-rm -rf "$IDD_ROOT"
+robust_rmrf "$IDD_ROOT"
 mkdir -p "$(dirname "$IDD_ROOT")"
 mv "$TREE_ROOT" "$IDD_ROOT"
-rm -rf "$STAGING"
+robust_rmrf "$STAGING"
 
 # ── 4. Apply Cityscapes-19 trainId remap via AutoNUE toolkit ────────────────
 # The toolkit writes *_gtFine_labellevel3Ids.png → *_gtFine_csTrainIds.png

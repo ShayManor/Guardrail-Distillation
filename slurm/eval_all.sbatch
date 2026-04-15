@@ -26,6 +26,25 @@ export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
+FAIL_LOG="/scratch/gautschi/manors/logs/eval-all_${SLURM_JOB_ID:-local}_failures.log"
+: > "$FAIL_LOG"
+echo "[fail-log] $FAIL_LOG"
+
+# Run a single eval invocation without aborting the whole job on failure.
+# Logs the failing label + rc to $FAIL_LOG and returns 0 so the caller can move on.
+try_eval () {
+  local label="$1"; shift
+  set +e
+  "$@"
+  local rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    echo "[FAIL] $label rc=$rc" | tee -a "$FAIL_LOG" >&2
+    return 0
+  fi
+  echo "[ok  ] $label"
+}
+
 TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
 find_mit () {
@@ -122,7 +141,7 @@ run_one () {
     echo "============================================"
     echo "[CS  ] $BB/$TAG   out=$EVAL_DIR"
     echo "============================================"
-    HF_HOME=/scratch/gautschi/manors/hf_cache \
+    try_eval "city $BB/$TAG" env HF_HOME=/scratch/gautschi/manors/hf_cache \
     python -u src/eval/full_eval.py eval \
       --run-id "city_${BB}_${TAG}" \
       --dataset-name cityscapes \
@@ -144,7 +163,7 @@ run_one () {
       echo "============================================"
       echo "[ACDC] $BB/$TAG domain=$DOMAIN   out=$EVAL_DIR"
       echo "============================================"
-      HF_HOME=/scratch/gautschi/manors/hf_cache \
+      try_eval "acdc $BB/$TAG/$DOMAIN" env HF_HOME=/scratch/gautschi/manors/hf_cache \
       python -u src/eval/full_eval.py eval \
         --run-id "acdc_${BB}_${TAG}_${DOMAIN}" \
         --dataset-name acdc \
@@ -171,7 +190,7 @@ run_one () {
     echo "============================================"
     echo "[IDD ] $BB/$TAG   out=$EVAL_DIR"
     echo "============================================"
-    HF_HOME=/scratch/gautschi/manors/hf_cache \
+    try_eval "idd $BB/$TAG" env HF_HOME=/scratch/gautschi/manors/hf_cache \
     python -u src/eval/full_eval.py eval \
       --run-id "idd_${BB}_${TAG}" \
       --dataset-name idd \
@@ -199,6 +218,13 @@ for J in "${JOBS[@]}"; do
 done
 
 echo ""
+echo "============================================"
+if [ -s "$FAIL_LOG" ]; then
+  echo "[failures] $(wc -l < "$FAIL_LOG") run(s) failed — see $FAIL_LOG"
+  sed 's/^/  /' "$FAIL_LOG"
+else
+  echo "[failures] none"
+fi
 echo "============================================"
 echo "[combine] merging all paper_eval_* CSVs"
 echo "============================================"
