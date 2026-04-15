@@ -2,11 +2,10 @@
 #SBATCH --job-name=upload-bdd
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=96
 #SBATCH --time=08:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
-#SBATCH --mem=16G
 #SBATCH -o /scratch/gautschi/manors/logs/upload-bdd_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/upload-bdd_%j.err
 
