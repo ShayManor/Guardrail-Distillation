@@ -89,7 +89,12 @@ TOOLKIT="$IDD_ROOT/_autonue_toolkit"
 if [ ! -d "$TOOLKIT" ]; then
   git clone --depth 1 https://github.com/AutoNUE/public-code.git "$TOOLKIT"
 fi
-pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy Pillow
+pip install -q cityscapesscripts numpy Pillow imageio numpngw tqdm pandas scipy
+
+# Patch PILLOW_VERSION → __version__ (removed in Pillow 9.0, toolkit is unmaintained)
+sed -i 's/from PIL import PILLOW_VERSION/from PIL import __version__ as PILLOW_VERSION/' \
+  "$TOOLKIT"/preperation/json2labelImg.py \
+  "$TOOLKIT"/preperation/json2instanceImg.py
 
 cd "$TOOLKIT"
 export PYTHONPATH="$PWD:$PWD/helpers:${PYTHONPATH:-}"

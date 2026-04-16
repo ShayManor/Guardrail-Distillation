@@ -67,7 +67,12 @@ if [ ! -d public-code ]; then
 fi
 
 # cityscapesScripts is needed by createLabels.py
-pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy Pillow
+pip install -q cityscapesscripts numpy Pillow imageio numpngw tqdm pandas scipy
+
+# Patch PILLOW_VERSION → __version__ (removed in Pillow 9.0, toolkit is unmaintained)
+sed -i 's/from PIL import PILLOW_VERSION/from PIL import __version__ as PILLOW_VERSION/' \
+  public-code/preperation/json2labelImg.py \
+  public-code/preperation/json2instanceImg.py
 
 # 4. Generate *_csTrainIds.png alongside the original labels
 cd public-code
