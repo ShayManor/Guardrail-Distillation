@@ -83,7 +83,7 @@ class IDDDataset(Dataset):
 
     Expects the tree produced by slurm/data/prep_idd_local.sbatch:
         <root>/leftImg8bit/{train,val}/<drive_id>/*_leftImg8bit.png
-        <root>/gtFine/{train,val}/<drive_id>/*_gtFine_csTrainIds.png
+        <root>/gtFine/{train,val}/<drive_id>/*_gtFine_labelcsTrainIds.png
 
     The ``*_csTrainIds.png`` labels come from the AutoNUE toolkit and are
     already mapped to the Cityscapes 19-class trainId ontology (values in
@@ -105,7 +105,7 @@ class IDDDataset(Dataset):
         for img in self.images:
             rel = img.relative_to(img_dir)
             lbl = lbl_dir / rel.parent / img.name.replace(
-                "_leftImg8bit.png", "_gtFine_csTrainIds.png"
+                "_leftImg8bit.png", "_gtFine_labelcsTrainIds.png"
             )
             self.labels.append(lbl)
 

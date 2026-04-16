@@ -81,8 +81,8 @@ mv "$TREE_ROOT" "$IDD_ROOT"
 robust_rmrf "$STAGING"
 
 # ── 4. Apply Cityscapes-19 trainId remap via AutoNUE toolkit ────────────────
-# The toolkit writes *_gtFine_labellevel3Ids.png → *_gtFine_csTrainIds.png
-# alongside originals. csTrainIds uses the standard 19-class Cityscapes
+# The toolkit writes *_gtFine_labellevel3Ids.png → *_gtFine_labelcsTrainIds.png
+# alongside originals. labelcsTrainIds uses the standard 19-class Cityscapes
 # ontology with `255` as ignore — identical value semantics to cityscapes
 # trainIds, so no further remap is needed at dataloader time.
 TOOLKIT="$IDD_ROOT/_autonue_toolkit"
@@ -112,8 +112,8 @@ echo "[ok] $REPO/data/idd -> $IDD_ROOT"
 cd "$IDD_ROOT"
 N_IMG_TRAIN=$(find leftImg8bit/train -type f \( -name '*.png' -o -name '*.jpg' \) | wc -l)
 N_IMG_VAL=$(find   leftImg8bit/val   -type f \( -name '*.png' -o -name '*.jpg' \) | wc -l)
-N_LBL_TRAIN=$(find gtFine/train -type f -name '*_csTrainIds.png' | wc -l)
-N_LBL_VAL=$(find   gtFine/val   -type f -name '*_csTrainIds.png' | wc -l)
+N_LBL_TRAIN=$(find gtFine/train -type f -name '*_labelcsTrainIds.png' | wc -l)
+N_LBL_VAL=$(find   gtFine/val   -type f -name '*_labelcsTrainIds.png' | wc -l)
 
 echo "[counts] train: $N_IMG_TRAIN img / $N_LBL_TRAIN cs19 lbl"
 echo "[counts] val:   $N_IMG_VAL img / $N_LBL_VAL cs19 lbl"
@@ -132,7 +132,7 @@ import os, random, numpy as np
 from pathlib import Path
 from PIL import Image
 root = Path(os.environ["IDD_ROOT"]) / "gtFine" / "val"
-lbls = sorted(root.rglob("*_csTrainIds.png"))
+lbls = sorted(root.rglob("*_labelcsTrainIds.png"))
 random.seed(0)
 allowed = set(range(19)) | {255}
 for p in random.sample(lbls, min(20, len(lbls))):
@@ -145,4 +145,4 @@ PY
 
 echo "[DONE] IDD staged at $IDD_ROOT, reachable as $REPO/data/idd"
 echo "       tree: leftImg8bit/{train,val}/<drive_id>/*.png"
-echo "             gtFine/{train,val}/<drive_id>/*_gtFine_csTrainIds.png"
+echo "             gtFine/{train,val}/<drive_id>/*_gtFine_labelcsTrainIds.png"

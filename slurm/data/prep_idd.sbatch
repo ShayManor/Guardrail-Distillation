@@ -18,9 +18,9 @@
 #
 # Outputs:
 #   $IDD_ROOT/idd20k_II/leftImg8bit/{train,val}/...
-#   $IDD_ROOT/idd20k_II/gtFine/{train,val}/.../ *_csTrainIds.png
+#   $IDD_ROOT/idd20k_II/gtFine/{train,val}/.../ *_labelcsTrainIds.png
 #
-# The *_csTrainIds.png files are the Cityscapes-19 remapped labels written by
+# The *_labelcsTrainIds.png files are the Cityscapes-19 remapped labels written by
 # AutoNUE/public-code's preperation/createLabels.py. They drop in as labels for
 # a Cityscapes-style dataloader with no further remap.
 
@@ -74,7 +74,7 @@ sed -i 's/from PIL import PILLOW_VERSION/from PIL import __version__ as PILLOW_V
   public-code/preperation/json2labelImg.py \
   public-code/preperation/json2instanceImg.py
 
-# 4. Generate *_csTrainIds.png alongside the original labels
+# 4. Generate *_labelcsTrainIds.png alongside the original labels
 cd public-code
 export PYTHONPATH="$PWD:$PWD/helpers:${PYTHONPATH:-}"
 python preperation/createLabels.py \
@@ -85,7 +85,7 @@ python preperation/createLabels.py \
 # 5. Summary
 cd "$IDD_ROOT"
 N_IMG=$(find idd20k_II/leftImg8bit -name '*.png' -o -name '*.jpg' | wc -l)
-N_LBL=$(find idd20k_II/gtFine -name '*_csTrainIds.png' | wc -l)
+N_LBL=$(find idd20k_II/gtFine -name '*_labelcsTrainIds.png' | wc -l)
 echo "[DONE] IDD ready at $IDD_ROOT/idd20k_II"
 echo "  images:      $N_IMG"
 echo "  cs19 labels: $N_LBL"
