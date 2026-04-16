@@ -92,7 +92,7 @@ fi
 pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy
 
 cd "$TOOLKIT"
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+export PYTHONPATH="$PWD:$PWD/helpers:${PYTHONPATH:-}"
 python preperation/createLabels.py \
   --datadir "$IDD_ROOT" \
   --id-type csTrainId \

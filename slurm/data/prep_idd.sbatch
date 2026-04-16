@@ -71,7 +71,7 @@ pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy
 
 # 4. Generate *_csTrainIds.png alongside the original labels
 cd public-code
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+export PYTHONPATH="$PWD:$PWD/helpers:${PYTHONPATH:-}"
 python preperation/createLabels.py \
   --datadir "$IDD_ROOT/idd20k_II" \
   --id-type csTrainId \
