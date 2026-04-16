@@ -1072,6 +1072,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             pixel_ent = -(probs_valid * (probs_valid + EPS).log()).sum(dim=0)
             pixel_ent_temp = -(temp_probs_valid * (temp_probs_valid + EPS).log()).sum(dim=0)
 
+            # Post-hoc baselines: Energy Score and MaxLogit (no retraining)
+            logits_valid = student_logits[i][:, valid]  # [C, N_valid]
+            pixel_energy = -torch.logsumexp(logits_valid, dim=0)  # [N_valid]
+            pixel_max_logit = logits_valid.max(dim=0).values      # [N_valid]
+
             row: Dict[str, Any] = {
                 "run_id": args.run_id,
                 "timestamp": now_ts(),
@@ -1094,6 +1099,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "student_entropy_std": float(pixel_ent.std().item()) if pixel_ent.numel() > 1 else 0.0,
                 "temp_msp": float(pixel_max_temp.mean().item()),
                 "temp_entropy": float(pixel_ent_temp.mean().item()),
+                "energy_score": float(pixel_energy.mean().item()),
+                "max_logit": float(pixel_max_logit.mean().item()),
                 "low_conf_frac_050": float((pixel_max < 0.50).float().mean().item()),
                 "low_conf_frac_070": float((pixel_max < 0.70).float().mean().item()),
                 "n_valid_pixels": int(valid.sum().item()),
@@ -1286,6 +1293,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "msp": df_img["student_msp"].values,
         "neg_entropy": (-df_img["student_entropy"].values),
         "temp_msp": df_img["temp_msp"].values,
+        "neg_energy": (-df_img["energy_score"].values),   # higher = more confident
+        "max_logit": df_img["max_logit"].values,           # higher = more confident
     }
     if "mc_entropy" in df_img.columns:
         score_keep_map["mc_dropout"] = -df_img["mc_entropy"].values
@@ -1326,6 +1335,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "msp": 1.0 - df_img["student_msp"].values,  # high = more likely to fallback
         "entropy": df_img["student_entropy"].values,
         "temp_msp": 1.0 - df_img["temp_msp"].values,
+        "energy": df_img["energy_score"].values,       # less negative = less confident = fallback
+        "max_logit": -df_img["max_logit"].values,      # lower max logit = less confident = fallback
     }
     if "mc_entropy" in df_img.columns:
         teacher_budget_methods["mc_dropout"] = df_img["mc_entropy"].values
@@ -1439,15 +1450,21 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "msp": 1.0 - df_img["student_msp"].values.astype(float),
         "entropy": df_img["student_entropy"].values.astype(float),
         "temp_msp": 1.0 - df_img["temp_msp"].values.astype(float),
+        "energy": df_img["energy_score"].values.astype(float),         # higher (less neg) = less confident
+        "max_logit": -df_img["max_logit"].values.astype(float),        # negate: lower logit = more likely to fail
     }
     df_fail = df_img.copy()
     df_fail["msp_fail_score"] = fail_score_cols["msp"]
     df_fail["entropy_fail_score"] = fail_score_cols["entropy"]
     df_fail["temp_msp_fail_score"] = fail_score_cols["temp_msp"]
+    df_fail["energy_fail_score"] = fail_score_cols["energy"]
+    df_fail["max_logit_fail_score"] = fail_score_cols["max_logit"]
     score_cols = {
         "msp": "msp_fail_score",
         "entropy": "entropy_fail_score",
         "temp_msp": "temp_msp_fail_score",
+        "energy": "energy_fail_score",
+        "max_logit": "max_logit_fail_score",
     }
     if "mc_entropy" in df_fail.columns:
         df_fail["mc_dropout_fail_score"] = df_fail["mc_entropy"].astype(float)
@@ -1534,6 +1551,10 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "temp_msp_aurc": float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "temp_msp")),
         "msp_ece": float(run_ece.get("msp", 0.0)),
         "temp_msp_ece": float(run_ece.get("temp_msp", 0.0)),
+        "energy_aurc": float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "neg_energy")),
+        "max_logit_aurc": float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "max_logit")),
+        "energy_score": float(df_img["energy_score"].mean()),
+        "max_logit": float(df_img["max_logit"].mean()),
     }
     if "mc_entropy" in df_img.columns:
         run_row["mc_dropout_aurc"] = float(next(r["aurc"] for r in risk_cov_rows if r["method"] == "mc_dropout"))
@@ -1561,7 +1582,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         run_row["confident_wrong_teacher_right"] = float(df_img["confident_wrong_teacher_right"].mean())
         for budget in [0.01, 0.05, 0.10, 0.20]:
             subset = [r for r in budget_rows if abs(r["teacher_budget"] - budget) < 1e-9]
-            for method in ["msp", "entropy", "temp_msp", "mc_dropout", "guardrail", "oracle"]:
+            for method in ["msp", "entropy", "temp_msp", "energy", "max_logit", "mc_dropout", "guardrail", "oracle"]:
                 match = [r for r in subset if r["method"] == method]
                 if match:
                     run_row[f"{method}_benefit_at_{int(budget*100)}"] = float(match[0]["benefit_recovered_frac"])
