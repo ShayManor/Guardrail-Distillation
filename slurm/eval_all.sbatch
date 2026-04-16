@@ -73,7 +73,7 @@ mapfile -t JOBS < <(python3 - <<'PY'
 import os, re, glob
 pat = re.compile(
     r"^runs/mit-(?P<bb>b[012])_guard"
-    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit))?"
+    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit|gt_disagree|gt_risk))?"
     r"(?:_s(?P<seed>\d+))?"
     r"_j(?P<jobid>\d+)$"
 )
@@ -282,7 +282,7 @@ tables = ["runs","per_image","per_class","risk_coverage","teacher_budget",
 dir_re = re.compile(
     r"^paper_eval_(?P<dataset>city|acdc|idd|bdd)_(?P<backbone>b[012])_"
     r"mit-b[012]_guard"
-    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit))?"
+    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit|gt_disagree|gt_risk))?"
     r"(?:_s(?P<seed>\d+))?"
     r"_j(?P<jobid>\d+)$"
 )
