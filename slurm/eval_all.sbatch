@@ -355,10 +355,12 @@ echo "============================================"
 echo "[git] committing + pushing combined_all/"
 echo "============================================"
 cd "$REPO"
-git add -A src/analysis/combined_all \
-           src/analysis/cs_b0_b2_eval \
-           src/analysis/acdc_b0_b2_eval \
-           src/analysis/combined_ablation_b1 2>/dev/null || true
+for _p in src/analysis/combined_all \
+          src/analysis/cs_b0_b2_eval \
+          src/analysis/acdc_b0_b2_eval \
+          src/analysis/combined_ablation_b1; do
+  [ -e "$_p" ] && git add -A "$_p"
+done
 if git diff --cached --quiet; then
   echo "[git] no changes to commit"
 else
