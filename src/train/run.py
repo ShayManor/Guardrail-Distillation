@@ -52,9 +52,10 @@ def parse_args():
     train_p.add_argument("--corruption-prob",  type=float, default=0.5,
         help="Probability of applying online corruption augmentation during guardrail training.")
     train_p.add_argument("--supervision-type", default="dense_multi",
-        choices=["scalar_benefit", "dense_disagree", "dense_gap", "dense_multi"],
+        choices=["scalar_benefit", "dense_disagree", "dense_gap", "dense_multi",
+                 "gt_disagree", "gt_risk"],
         help="Guardrail supervision target. 'dense_multi' (default) trains both dense "
-             "heads; the other three are for ablations.")
+             "heads; gt_disagree/gt_risk are label-supervised baselines.")
     train_p.add_argument("--dense-disagree-weight", type=float, default=1.0)
     train_p.add_argument("--dense-gap-weight",      type=float, default=1.0)
     train_p.add_argument("--scalar-benefit-weight", type=float, default=1.0,

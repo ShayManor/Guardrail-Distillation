@@ -130,13 +130,64 @@ def _teacher_risk_gap_map(student_logits, teacher_logits, labels):
     return gap, valid
 
 
-def _build_targets(student_logits, teacher_logits, labels):
+def _gt_disagreement_map(student_logits, labels):
+    """Per-pixel 0/1 mask: 1 where student argmax differs from ground truth.
+
+    Same architecture target as ``_teacher_disagreement_map`` but uses GT
+    labels instead of teacher predictions. This is the label-supervised
+    baseline: if the teacher-disagreement head beats this under OOD shift,
+    the teacher signal generalizes better than source-domain GT labels.
+
+    Returns (disagree: float B×H×W, valid_mask: float B×H×W).
+    """
+    student_pred = student_logits.argmax(dim=1)
+    disagree = (student_pred != labels).float()
+    valid = (labels != IGNORE_INDEX).float()
+    disagree = disagree * valid  # zero out ignore pixels
+    return disagree, valid
+
+
+def _gt_risk_map(student_logits, labels):
+    """Per-pixel student cross-entropy against ground truth.
+
+    Label-supervised counterpart of ``_teacher_risk_gap_map``. Instead of
+    ``student_ce − teacher_ce``, this is just ``student_ce``: the head
+    learns to predict per-pixel student failure magnitude from GT labels.
+
+    Returns (risk: float B×H×W, valid_mask: float B×H×W).
+    """
+    ignore = labels == IGNORE_INDEX
+    safe = labels.clone()
+    safe[ignore] = 0
+    student_ce = F.cross_entropy(student_logits, safe, reduction="none")
+    valid = (~ignore).float()
+    return student_ce * valid, valid
+
+
+def _build_targets(student_logits, teacher_logits, labels, supervision_type="dense_multi"):
     """Build every target the GuardrailPlusLoss might need.
 
-    Cheap to compute unconditionally — the loss picks which subset to
-    actually apply based on ``supervision_type``.
+    For teacher-based modes (dense_multi, dense_disagree, dense_gap,
+    scalar_benefit), targets come from teacher-student comparison.
+    For GT-based modes (gt_disagree, gt_risk), targets come from
+    ground-truth labels — no teacher signal used.
     """
-    disagree_target, valid = _teacher_disagreement_map(
+    valid = (labels != IGNORE_INDEX).float()
+
+    if supervision_type in ("gt_disagree", "gt_risk"):
+        # GT-supervised baselines: same architecture, label-supervised
+        gt_disagree_target, _ = _gt_disagreement_map(student_logits, labels)
+        gt_risk_target, _ = _gt_risk_map(student_logits, labels)
+        return {
+            "utility_target": torch.zeros(student_logits.shape[0], device=student_logits.device),
+            "disagree_target": gt_disagree_target,
+            "disagree_valid": valid,
+            "gap_target": gt_risk_target,
+            "gap_valid": valid,
+        }
+
+    # Teacher-based modes
+    disagree_target, _ = _teacher_disagreement_map(
         student_logits, teacher_logits, labels
     )
     gap_signed, _ = _teacher_risk_gap_map(student_logits, teacher_logits, labels)
@@ -234,7 +285,8 @@ def train_guardrail(
                         student_feat = None
                     teacher_logits = teacher(imgs)
 
-                targets = _build_targets(student_logits, teacher_logits, lbls)
+                targets = _build_targets(student_logits, teacher_logits, lbls,
+                                        supervision_type=cfg.supervision_type)
                 preds = guardrail(student_logits, student_feat)
                 loss, loss_info = criterion(preds, targets)
 
@@ -364,7 +416,8 @@ def _eval_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_fe
             student_feat = None
         teacher_logits = teacher(imgs)
 
-        targets = _build_targets(student_logits, teacher_logits, lbls)
+        targets = _build_targets(student_logits, teacher_logits, lbls,
+                                supervision_type=cfg.supervision_type)
         preds = guardrail(student_logits, student_feat)
         loss, _ = criterion(preds, targets)
         total_loss += loss.item() * imgs.shape[0]

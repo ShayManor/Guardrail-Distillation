@@ -154,7 +154,8 @@ class GuardrailPlusLoss(nn.Module):
     ):
         super().__init__()
         assert supervision_type in (
-            "scalar_benefit", "dense_disagree", "dense_gap", "dense_multi"
+            "scalar_benefit", "dense_disagree", "dense_gap", "dense_multi",
+            "gt_disagree", "gt_risk",
         ), f"unknown supervision_type: {supervision_type}"
         self.supervision_type = supervision_type
         self.dense_disagree_weight = float(dense_disagree_weight)
@@ -172,8 +173,8 @@ class GuardrailPlusLoss(nn.Module):
 
         st = self.supervision_type
         use_scalar = st == "scalar_benefit"
-        use_disagree = st in ("dense_disagree", "dense_multi")
-        use_gap = st in ("dense_gap", "dense_multi")
+        use_disagree = st in ("dense_disagree", "dense_multi", "gt_disagree")
+        use_gap = st in ("dense_gap", "dense_multi", "gt_risk")
 
         if use_scalar:
             l_utility = F.smooth_l1_loss(

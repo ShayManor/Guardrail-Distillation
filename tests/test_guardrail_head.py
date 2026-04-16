@@ -215,6 +215,106 @@ except Exception as exc:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Section 6 — GT-supervised baseline modes (gt_disagree, gt_risk)
+# ──────────────────────────────────────────────────────────────────────
+print("\n[6] GT-supervised baseline modes")
+
+# Loss + gradient tests for gt_disagree and gt_risk
+for st in ("gt_disagree", "gt_risk"):
+    head_fresh = GuardrailPlusHead(num_classes=19, feat_channels=0)
+    logits, _, _ = make_inputs(feat_ch=0)
+    logits.requires_grad_(False)
+    preds = head_fresh(logits)
+    criterion = GuardrailPlusLoss(supervision_type=st)
+    loss, info = criterion(preds, targets)
+    test(f"[{st}] loss is finite", torch.isfinite(loss).item(),
+         f"loss={loss.item()}")
+    test(f"[{st}] loss is positive", loss.item() >= 0.0,
+         f"loss={loss.item()}")
+
+    loss.backward()
+    disagree_grad = head_fresh.disagree_head.weight.grad
+    gap_grad = head_fresh.gap_head.weight.grad
+
+    if st == "gt_disagree":
+        test(f"[{st}] disagree_head has grad",
+             disagree_grad is not None and disagree_grad.abs().sum() > 0)
+        test(f"[{st}] gap_head has NO grad (untrained)",
+             gap_grad is None or gap_grad.abs().sum() == 0)
+    if st == "gt_risk":
+        test(f"[{st}] gap_head has grad",
+             gap_grad is not None and gap_grad.abs().sum() > 0)
+        test(f"[{st}] disagree_head has NO grad (untrained)",
+             disagree_grad is None or disagree_grad.abs().sum() == 0)
+
+    test(f"[{st}] info contains loss key", "loss" in info)
+
+# Target builder tests for GT modes
+try:
+    from train_guardrail import _build_targets, _gt_disagreement_map, _gt_risk_map
+    B, C, H, W = 2, 19, 32, 64
+    student_logits = torch.randn(B, C, H, W)
+    teacher_logits = torch.randn(B, C, H, W)
+    labels = torch.randint(0, C, (B, H, W))
+    labels[0, 0, :10] = 255  # ignore pixels
+
+    # gt_disagree targets
+    tgt_gtd = _build_targets(student_logits, teacher_logits, labels,
+                             supervision_type="gt_disagree")
+    test("gt_disagree: disagree_target shape",
+         tgt_gtd["disagree_target"].shape == labels.shape)
+
+    # Verify GT disagree target = (student_pred != label) at valid pixels
+    gt_dis, gt_val = _gt_disagreement_map(student_logits, labels)
+    test("gt_disagree: target matches _gt_disagreement_map",
+         torch.allclose(tgt_gtd["disagree_target"], gt_dis))
+
+    # Verify ignore pixels are zeroed
+    test("gt_disagree: ignore pixels zeroed in target",
+         tgt_gtd["disagree_target"][0, 0, 5].item() == 0.0)
+    test("gt_disagree: valid mask marks ignore as 0",
+         tgt_gtd["disagree_valid"][0, 0, 5].item() == 0.0)
+
+    # gt_risk targets
+    tgt_gtr = _build_targets(student_logits, teacher_logits, labels,
+                             supervision_type="gt_risk")
+    gt_risk, gt_rv = _gt_risk_map(student_logits, labels)
+    test("gt_risk: gap_target shape",
+         tgt_gtr["gap_target"].shape == labels.shape)
+    test("gt_risk: target matches _gt_risk_map",
+         torch.allclose(tgt_gtr["gap_target"], gt_risk))
+    test("gt_risk: ignore pixels zeroed",
+         tgt_gtr["gap_target"][0, 0, 5].item() == 0.0)
+
+    # Verify gt_risk values are non-negative (CE is >= 0)
+    valid_risk = tgt_gtr["gap_target"][tgt_gtr["gap_valid"] > 0]
+    test("gt_risk: all valid values >= 0",
+         (valid_risk >= 0).all().item())
+
+    # Full end-to-end step for gt_disagree
+    head = GuardrailPlusHead(num_classes=C, feat_channels=0)
+    criterion = GuardrailPlusLoss(supervision_type="gt_disagree")
+    preds = head(student_logits)
+    loss, info = criterion(preds, tgt_gtd)
+    loss.backward()
+    test("gt_disagree e2e: loss is finite", torch.isfinite(loss).item())
+    test("gt_disagree e2e: has dense_disagree_loss", "dense_disagree_loss" in info)
+
+    # Full end-to-end step for gt_risk
+    head2 = GuardrailPlusHead(num_classes=C, feat_channels=0)
+    criterion2 = GuardrailPlusLoss(supervision_type="gt_risk")
+    preds2 = head2(student_logits)
+    loss2, info2 = criterion2(preds2, tgt_gtr)
+    loss2.backward()
+    test("gt_risk e2e: loss is finite", torch.isfinite(loss2).item())
+    test("gt_risk e2e: has dense_gap_loss", "dense_gap_loss" in info2)
+
+except Exception as exc:
+    traceback.print_exc()
+    test("GT baseline tests raised", False, str(exc))
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Summary
 # ──────────────────────────────────────────────────────────────────────
 print(f"\n== {PASS} passed, {FAIL} failed ==")
