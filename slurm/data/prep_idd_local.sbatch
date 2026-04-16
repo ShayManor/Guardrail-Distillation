@@ -89,7 +89,7 @@ TOOLKIT="$IDD_ROOT/_autonue_toolkit"
 if [ ! -d "$TOOLKIT" ]; then
   git clone --depth 1 https://github.com/AutoNUE/public-code.git "$TOOLKIT"
 fi
-pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy
+pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy Pillow
 
 cd "$TOOLKIT"
 export PYTHONPATH="$PWD:$PWD/helpers:${PYTHONPATH:-}"

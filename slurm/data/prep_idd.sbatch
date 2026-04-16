@@ -67,7 +67,7 @@ if [ ! -d public-code ]; then
 fi
 
 # cityscapesScripts is needed by createLabels.py
-pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy
+pip install -q cityscapesscripts numpngw imageio tqdm pandas scipy Pillow
 
 # 4. Generate *_csTrainIds.png alongside the original labels
 cd public-code
