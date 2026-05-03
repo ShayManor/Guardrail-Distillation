@@ -9,9 +9,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
 import os, sys
+from pathlib import Path
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "/Users/shay/PycharmProjects/Guardrail-Distillation/src/analysis/acdc_b0_b2_eval/csv"
-OUT = sys.argv[2] if len(sys.argv) > 2 else "/Users/shay/PycharmProjects/Guardrail-Distillation/src/analysis/acdc_b0_b2_eval/csv"
+_DEFAULT = str(Path(__file__).resolve().parent / "acdc_b0_b2_eval" / "csv")
+BASE = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT
+OUT = sys.argv[2] if len(sys.argv) > 2 else _DEFAULT
 os.makedirs(OUT, exist_ok=True)
 
 pi = pd.read_csv(os.path.join(BASE, "per_image.csv"))

@@ -3,10 +3,13 @@
     python src/analysis/show_confident_failures.py <csv_dir>
 """
 import os, sys
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "/Users/shay/PycharmProjects/Guardrail-Distillation/src/analysis/cs_b0_b2_eval/csv"
+BASE = sys.argv[1] if len(sys.argv) > 1 else str(
+    Path(__file__).resolve().parent / "cs_b0_b2_eval" / "csv"
+)
 cf = pd.read_csv(os.path.join(BASE, "confident_failures.csv"))
 
 COLORS = {"msp": "#4C72B0", "entropy": "#DD8452", "mc_dropout": "#C44E52",
