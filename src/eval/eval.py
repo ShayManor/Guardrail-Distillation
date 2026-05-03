@@ -1,3 +1,9 @@
+"""Lightweight per-image eval driver.
+
+Used for the sanity-eval pass at the end of training. Paper numbers come
+from full_eval.py, which is a separate, much richer pipeline.
+"""
+
 import csv
 import time
 from dataclasses import asdict
@@ -11,8 +17,9 @@ import torch.nn.functional as F
 from src.eval.data import DEFAULT_TRANSFORM, LABEL_TRANSFORM, is_hf_path, is_kaggle_path, load_hf_stream, load_local_dataset, load_kaggle_dataset
 from src.eval.analysis import ImageMetrics, compute_metrics
 
+
 def sliding_window_inference(model, img_tensor, crop_size=(1024, 1024), stride=(768, 768), num_classes=19):
-    """Sliding window with overlapping crops, averaging logits."""
+    """Overlapping-crop inference with logit averaging."""
     B, C, H, W = img_tensor.shape
     logits = img_tensor.new_zeros((B, num_classes, H, W))
     count = img_tensor.new_zeros((B, 1, H, W))
@@ -34,18 +41,18 @@ def sliding_window_inference(model, img_tensor, crop_size=(1024, 1024), stride=(
     return logits / count
 
 def load_model(model_tag: str, device: torch.device, num_classes: int = 19, do_resize=False):
-    """
-    Load segmentation model from HF tag (must be cached locally).
-    Returns (model, processor_or_None).
+    """Load a segmentation model from a (cached) HF tag, optionally with checkpoint weights.
+
+    model_tag formats:
+        "org/name"                       — pretrained weights only
+        "org/name::/path/to/weights.ckpt" — same arch, custom weights
     """
     from transformers import AutoModelForSemanticSegmentation, AutoImageProcessor
 
     ckpt_path = None
     arch_tag = model_tag
 
-    # Check if it's a checkpoint path
     if "::" in model_tag:
-        # Format: "nvidia/segformer-b0-finetuned-cityscapes-1024-1024::/path/to/finetuned.ckpt"
         arch_tag, ckpt_path = model_tag.split("::", 1)
     elif any(model_tag.endswith(ext) for ext in (".ckpt", ".pth", ".pt", ".bin", ".safetensors")):
         ckpt_path = model_tag
@@ -67,19 +74,13 @@ def load_model(model_tag: str, device: torch.device, num_classes: int = 19, do_r
     if ckpt_path:
         print(f"[model] Loading weights from {ckpt_path}")
         state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        # Handle common checkpoint formats
         if isinstance(state, dict):
-            if "state_dict" in state:
-                state = state["state_dict"]
-            elif "model_state_dict" in state:
-                state = state["model_state_dict"]
-            elif "model" in state:
-                state = state["model"]
-        # Strip "model." prefix if present (common in lightning checkpoints)
-        cleaned = {}
-        for k, v in state.items():
-            k = k.removeprefix("model.")
-            cleaned[k] = v
+            for key in ("state_dict", "model_state_dict", "model"):
+                if key in state:
+                    state = state[key]
+                    break
+        # Lightning prefixes everything with "model." — strip it.
+        cleaned = {k.removeprefix("model."): v for k, v in state.items()}
         missing, unexpected = model.load_state_dict(cleaned, strict=False)
         if missing:
             print(f"[model] Missing keys: {len(missing)} (first 5: {missing[:5]})")
@@ -133,12 +134,10 @@ def run_eval(
     model_name: Optional[str] = None,
     dataset_name: Optional[str] = None,
 ) -> Path:
-    """Run eval, write per-image metrics CSV. Returns output path.
+    """Run per-image eval, write metrics CSV, return its path.
 
-    dataset_path formats:
-      - Local:  "./data/cityscapes/val"
-      - HF:    "hf://org/dataset[/split]"    (streamed, no disk usage)
-      - Kaggle: "kaggle://owner/dataset[/split]" (downloaded once to ~/.cache/kaggle_datasets/)
+    dataset_path: local dir, "hf://org/dataset[/split]" (streamed),
+    or "kaggle://owner/dataset[/split]" (cached locally on first use).
     """
     dev = torch.device(device)
     model, processor = load_model(model_tag, dev, num_classes, do_resize)
@@ -180,6 +179,7 @@ def run_eval(
             lbl_np = lbl_np[:, :, 0]
         if label_map is not None:
             if isinstance(next(iter(label_map)), tuple):
+                # RGB palette → trainId via nearest-neighbour, with a max-distance threshold.
                 palette = np.array(list(label_map.keys()), dtype=np.float32)
                 ids = np.array(list(label_map.values()), dtype=np.int64)
                 pixels = lbl_np[:, :, :3].reshape(-1, 3).astype(np.float32)
@@ -191,7 +191,6 @@ def run_eval(
                 lbl_np = mapped.reshape(lbl_np.shape[:2])
             else:
                 lbl_np = np.vectorize(lambda x: label_map.get(x, 255))(lbl_np)
-        # lbl_np[(lbl_np >= num_classes) & (lbl_np != 255)] = 255
         if not results:
             total = lbl_np.size
             ignored = (lbl_np == 255).sum()
@@ -258,7 +257,6 @@ def run_eval(
             row["dataset_name"] = dn
             writer.writerow(row)
 
-    # agg_miou = np.mean([r.miou for r in results])
     if use_sliding_window:
         inter = conf_mat.diag().float()
         union = conf_mat.sum(0).float() + conf_mat.sum(1).float() - inter

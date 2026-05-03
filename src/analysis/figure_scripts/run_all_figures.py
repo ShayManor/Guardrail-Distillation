@@ -1,12 +1,7 @@
-"""Generate every figure in src/analysis/figures/ from src/analysis/combined_all/.
+"""Run every figure script's main() in-process and print a timing table.
 
-Usage:
-    python src/analysis/figure_scripts/run_all_figures.py
-
-Each figure module exposes a ``main()`` that reads ``combined_all/`` (or the
-``GD_COMBINED`` env var) and writes to ``figures/`` (or ``GD_FIGURES``). This
-script imports and calls each ``main()`` in a subprocess-free loop, collects
-timing, and prints a summary table at the end.
+Each module reads from combined_all/ (override with GD_COMBINED) and writes
+into figures/ (override with GD_FIGURES). One bad figure won't stop the rest.
 """
 
 from __future__ import annotations

@@ -1,11 +1,6 @@
-"""
-Figure: Risk-coverage curves comparing all deferral methods.
+"""Risk-coverage curves for every deferral method (lower is better).
 
-Shows cumulative risk as a function of coverage. Lower is better.
-Guardrail++ should dominate MSP/Entropy/MC-Dropout at every coverage level.
-
-Usage:
-    python src/analysis/risk_coverage_figure.py paper_eval_v3/csv
+    python src/analysis/risk_coverage.py <csv_dir>
 """
 
 import os, sys

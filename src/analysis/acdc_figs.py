@@ -1,8 +1,6 @@
-"""
-ACDC Domain Shift Figures for PI Presentation
-==============================================
-Strengthens Contribution 1 (teacher gap ≠ student uncertainty under shift)
-and motivates Contributions 2-3.
+"""ACDC domain-shift figures: shift impact, confident failures, ρ collapse, deferral.
+
+    python src/analysis/acdc_figs.py <csv_dir> [<out_dir>]
 """
 import pandas as pd
 import numpy as np
@@ -32,23 +30,19 @@ COND_COLORS = {"fog": "#8DA0CB", "night": "#1B1B2F", "rain": "#66C2A5", "snow": 
 COND_ORDER = ["fog", "rain", "snow", "night"]
 COND_LABELS = {"fog": "Fog", "rain": "Rain", "snow": "Snow", "night": "Night"}
 
-# Cityscapes reference values (from previous v3 eval)
+# In-distribution Cityscapes reference values, used as the leftmost bar.
 CS_STUDENT_MIOU = 0.537
 CS_TEACHER_MIOU = 0.630
 CS_TEACHER_BENEFIT = 0.095
 CS_MSP_RHO = -0.114
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FIGURE 1: Domain shift impact — mIoU collapses, teacher benefit rises
-# Strengthens: Contribution 1 (gap ≠ uncertainty) + Contribution 3 (need for deferral)
-# ══════════════════════════════════════════════════════════════════════════════
+
+# Figure 1 — mIoU collapses and teacher benefit rises under shift.
 fig, axes = plt.subplots(1, 2, figsize=(12, 5), dpi=200)
 
-# Panel A: mIoU comparison
 ax = axes[0]
 conds = COND_ORDER
 x = np.arange(len(conds) + 1)
-# Calculate per-condition statistics from per_image data
 cond_stats = pi.groupby("condition").agg({"student_miou": "mean", "teacher_miou": "mean"})
 student_vals = [CS_STUDENT_MIOU] + [float(cond_stats.loc[c, "student_miou"]) for c in conds]
 teacher_vals = [CS_TEACHER_MIOU] + [float(cond_stats.loc[c, "teacher_miou"]) for c in conds]
@@ -69,7 +63,6 @@ ax.legend(fontsize=9)
 ax.set_ylim(0, 0.75)
 ax.axvline(0.5, color="gray", ls="--", alpha=0.3)
 
-# Panel B: Teacher benefit comparison
 ax = axes[1]
 benefit_stats = pi.groupby("condition")["teacher_benefit"].mean()
 benefits = [CS_TEACHER_BENEFIT] + [float(benefit_stats.loc[c]) for c in conds]
@@ -93,10 +86,7 @@ plt.close(fig)
 print(f"[1/4] {OUT}/fig1_shift_impact.png")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FIGURE 2: Confident failure explosion under shift
-# Strengthens: Contribution 1 (MSP is blind to failures)
-# ══════════════════════════════════════════════════════════════════════════════
+# Figure 2 — confident-failure rate by condition (MSP is blind to most of these).
 fig, ax = plt.subplots(figsize=(9, 5), dpi=200)
 
 fail_data = []
@@ -138,10 +128,7 @@ plt.close(fig)
 print(f"[2/4] {OUT}/fig2_confident_failures.png")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FIGURE 3: MSP ρ stays near zero across ALL conditions
-# Strengthens: Contribution 1 — the decorrelation is universal
-# ══════════════════════════════════════════════════════════════════════════════
+# Figure 3 — Spearman ρ between each uncertainty signal and teacher benefit.
 fig, ax = plt.subplots(figsize=(8, 5), dpi=200)
 
 rho_data = []
@@ -153,7 +140,6 @@ for cond in COND_ORDER:
     rho_data.append({"condition": COND_LABELS[cond], "MSP": -r_msp, "Entropy": r_ent,
                      "MC Dropout": r_mc, "color": COND_COLORS[cond]})
 
-# Add Cityscapes
 rho_data.insert(0, {"condition": "Cityscapes\n(in-dist)", "MSP": -CS_MSP_RHO,
                      "Entropy": 0.108, "MC Dropout": 0.115, "color": "#999999"})
 
@@ -190,10 +176,7 @@ plt.close(fig)
 print(f"[3/4] {OUT}/fig3_rho_by_condition.png")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FIGURE 4: Per-condition scatter — MSP vs teacher benefit (4 panels)
-# Strengthens: Contribution 1 — visual proof of decorrelation per condition
-# ══════════════════════════════════════════════════════════════════════════════
+# Figure 4 — per-condition MSP vs teacher-benefit scatter (4 panels).
 fig, axes = plt.subplots(2, 2, figsize=(12, 10), dpi=200)
 
 for ax, cond in zip(axes.flat, COND_ORDER):
@@ -204,7 +187,6 @@ for ax, cond in zip(axes.flat, COND_ORDER):
     ax.set_xlabel("Student MSP (confidence)")
     ax.set_ylabel("Teacher benefit (Δ risk)")
     ax.set_title(f"{COND_LABELS[cond]}:  ρ = {r:.3f}   (n={len(sub)})", fontsize=11)
-    # Highlight confident failures
     conf_fail = sub[(sub["student_msp"] >= 0.90) & (sub["student_miou"] <= 0.30)]
     if len(conf_fail) > 0:
         ax.scatter(conf_fail["student_msp"], conf_fail["teacher_benefit"],
@@ -219,5 +201,4 @@ fig.savefig(f"{OUT}/fig4_scatter_by_condition.png", dpi=220, bbox_inches="tight"
 plt.close(fig)
 print(f"[4/4] {OUT}/fig4_scatter_by_condition.png")
 
-# ══════════════════════════════════════════════════════════════════════════════
 print(f"\nAll figures saved to {OUT}/")

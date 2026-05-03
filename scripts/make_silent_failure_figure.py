@@ -1,22 +1,15 @@
-"""Qualitative figure: silent confident failure under shift.
+"""Qualitative grid: silent confident-failure under shift.
 
-4 rows (one image per dataset) x 7 columns:
+4 rows (one image per dataset) × 7 columns:
     input | GT | student pred | student error | student MSP |
-    teacher-supervised guardrail heatmap | GT-supervised guardrail heatmap
+    teacher-supervised guardrail | GT-supervised guardrail
 
-Both guardrail heads share architecture (GuardrailPlusHead, 66.8K params),
-training schedule, and corruption augmentation. The only difference is
-the supervision target: teacher-student disagreement vs student-vs-GT
-disagreement. At inference both produce sigmoid(disagree_logits) in [0,1].
-
-Image selection criterion (reproduced from src/analysis/combined_all/per_image.csv,
-backbone=b1): for each dataset, pick the image that maximises
-(dense_multi util - gt_disagree util) among (student_msp>=0.85, student_risk>=0.25).
-That is, the image most representative of teacher-head's edge.
-
-Paths and checkpoints resolve through env vars (SKD_DIR, GUARD_TEACHER_DIR,
-GUARD_GT_DIR, *_PATH for datasets) so this is safe to run on the cluster
-or locally if checkpoints are staged.
+Both guardrail heads share architecture, training schedule, and corruption
+aug — the only difference is the supervision target. Image picks come from
+combined_all/per_image.csv: per dataset, the image that maximises
+(dense_multi - gt_disagree) utility among (student_msp>=0.85, risk>=0.25).
+Paths/checkpoints resolve from env vars (STUDENT_CKPT, GUARD_TEACHER_CKPT,
+GUARD_GT_CKPT, ACDC_PATH, IDD_PATH, BDD_PATH, CITY_PATH, MIT_STUDENT).
 """
 from __future__ import annotations
 
@@ -37,10 +30,6 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 
-# ---------------------------------------------------------------------------
-# Selection (hard-coded from the per_image.csv analysis; see module docstring).
-# ---------------------------------------------------------------------------
-
 SELECTION = [
     dict(
         dataset="acdc",
@@ -54,18 +43,9 @@ SELECTION = [
         label="ACDC snow",
         image_id="GOPR0122_frame_000332_rgb_anon",
     ),
-    dict(
-        dataset="idd",
-        domain="all",
-        label="IDD (India)",
-        image_id="img_000214",  # index 214 in sorted val split
-    ),
-    dict(
-        dataset="bdd",
-        domain="all",
-        label="BDD100K (US)",
-        image_id="img_000338",  # index 338 in sorted val split
-    ),
+    # IDD/BDD image_ids are positional indices into the sorted val split.
+    dict(dataset="idd", domain="all", label="IDD (India)",   image_id="img_000214"),
+    dict(dataset="bdd", domain="all", label="BDD100K (US)",  image_id="img_000338"),
 ]
 
 COLUMN_TITLES = [
@@ -154,7 +134,7 @@ def resolve_backbone(model_tag: str, env_key: str) -> str:
     override = os.environ.get(env_key)
     if override:
         return override
-    # Mirror the auto-discovery used in slurm scripts.
+    # Mirror the HF-snapshot discovery the slurm scripts use.
     candidates = []
     for root in ("/scratch/gautschi/manors", str(Path.home() / ".cache")):
         candidates.extend(Path(root).glob(f"**/models--nvidia--{model_tag}/snapshots/*"))
@@ -164,11 +144,6 @@ def resolve_backbone(model_tag: str, env_key: str) -> str:
     raise FileNotFoundError(
         f"Could not locate HuggingFace snapshot for nvidia/{model_tag}. Set {env_key}=..."
     )
-
-
-# ---------------------------------------------------------------------------
-# Image fetching per dataset.
-# ---------------------------------------------------------------------------
 
 
 def fetch_sample(dataset: str, domain: str, image_id: str, dataset_path: Path) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -197,7 +172,7 @@ def fetch_sample(dataset: str, domain: str, image_id: str, dataset_path: Path) -
 
 
 def _fetch_acdc(domain: str, image_id: str, dataset_path: Path):
-    """Reuse full_eval's ACDC loader so the label-LUT path is identical."""
+    """Reuse full_eval's ACDC loader so the label LUT matches the paper run."""
     sys.path.insert(0, str(repo_root()))
     from src.eval.full_eval import EvalConfig, _build_acdc_loader
 
@@ -221,11 +196,6 @@ def _fetch_acdc(domain: str, image_id: str, dataset_path: Path):
         if m.get("image_id") == image_id:
             return img[0], lbl[0]
     raise LookupError(f"ACDC image_id={image_id!r} (domain={domain}) not found under {dataset_path}")
-
-
-# ---------------------------------------------------------------------------
-# Model loading (reuse full_eval builders).
-# ---------------------------------------------------------------------------
 
 
 def load_models(
@@ -257,11 +227,6 @@ def load_models(
     return student, teacher_head, gt_head, teacher_uses_feat, gt_uses_feat
 
 
-# ---------------------------------------------------------------------------
-# Forward + visualisation.
-# ---------------------------------------------------------------------------
-
-
 @torch.no_grad()
 def run_forward(
     img: torch.Tensor,
@@ -283,7 +248,7 @@ def run_forward(
         feat = None
 
     probs = F.softmax(logits, dim=1)
-    msp, pred = probs.max(dim=1)  # [1,H,W], [1,H,W]
+    msp, pred = probs.max(dim=1)
 
     def head_map(head, uses_feat):
         out = head(logits, student_features=feat if uses_feat else None)
@@ -359,11 +324,6 @@ def render_grid(rows: List[Tuple[dict, Dict[str, np.ndarray]]], output_path: Pat
     fig.subplots_adjust(wspace=0.04, hspace=0.04)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# Main.
-# ---------------------------------------------------------------------------
 
 
 def main() -> int:

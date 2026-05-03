@@ -1,11 +1,6 @@
-"""
-Figure: Cost-quality Pareto under teacher compute budget.
+"""Cost/quality Pareto: effective mIoU and recovered teacher benefit vs deferral budget.
 
-Left panel:  Effective system mIoU vs teacher budget %
-Right panel: Fraction of total teacher benefit recovered vs budget %
-
-Usage:
-    python src/analysis/teacher_budget_figure.py paper_eval_v3/csv
+    python src/analysis/latency_figure.py <csv_dir>
 """
 
 import os, sys

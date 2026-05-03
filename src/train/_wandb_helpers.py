@@ -1,4 +1,4 @@
-"""Weights & Biases integration for guardrail distillation training."""
+"""Weights & Biases integration. Every helper is a no-op when wandb is unavailable."""
 
 import os
 import tempfile
@@ -7,13 +7,7 @@ from dataclasses import asdict
 
 
 def setup_wandb(cfg, args):
-    """Initialize a wandb run with full hyperparameter tracking.
-
-    All Config fields and CLI-only args (model names, skip flags) are logged
-    as wandb config so every hyperparameter is searchable and filterable.
-
-    Returns True if wandb was initialised, False otherwise.
-    """
+    """Init a wandb run pinned to a unique exp name. Returns True iff wandb was started."""
     if getattr(args, "no_wandb", False):
         return False
 
@@ -23,7 +17,6 @@ def setup_wandb(cfg, args):
         print("[wandb] Not installed (pip install wandb). Skipping.")
         return False
 
-    # ── Build config dict from dataclass + CLI extras ──
     config_dict = asdict(cfg)
     config_dict["student_model"] = args.student_model
     config_dict["teacher_model"] = args.teacher_model
@@ -32,7 +25,6 @@ def setup_wandb(cfg, args):
     config_dict["skip_skd"] = getattr(args, "skip_skd", False)
     config_dict["skip_guardrail"] = getattr(args, "skip_guardrail", False)
 
-    # ── Experiment name ──
     exp_name = getattr(args, "wandb_name", None)
     if not exp_name:
         parts = [args.student_model.split("/")[-1], cfg.supervision_type]
@@ -58,7 +50,6 @@ def setup_wandb(cfg, args):
         print(f"[wandb] Init failed ({e}). Training will continue without wandb.")
         return False
 
-    # Tell wandb which logged value to use as x-axis for each metric group.
     wandb.define_metric("global_step")
     for prefix in ("supervised", "kd", "skd", "guardrail", "system", "perf"):
         wandb.define_metric(f"{prefix}/*", step_metric="global_step")
@@ -67,14 +58,9 @@ def setup_wandb(cfg, args):
     return True
 
 
-# ── Logging helpers ──────────────────────────────────────────────────────────
-
-
 def wandb_log(metrics, step=None):
-    """Log *metrics* to wandb.  No-op when wandb is not active or on error."""
     try:
         import wandb
-
         if wandb.run is None:
             return
         if step is not None:
@@ -83,18 +69,12 @@ def wandb_log(metrics, step=None):
     except ImportError:
         pass
     except Exception:
-        # Network blip, auth expiry, etc. — never crash training.
+        # Network/auth issues should never bring down a 12h training job.
         pass
 
 
 def log_system_metrics(step):
-    """Log torch CUDA memory usage.
-
-    wandb's built-in system monitor already tracks GPU utilization, CPU %,
-    RAM, disk I/O, and network.  Here we add torch-level memory stats which
-    reflect the Python process specifically (useful when multiple jobs share
-    a GPU).
-    """
+    """torch CUDA memory stats. wandb's built-in monitor handles GPU util / RAM."""
     try:
         import wandb
 
@@ -106,18 +86,11 @@ def log_system_metrics(step):
     metrics = {}
     try:
         import torch
-
         if torch.cuda.is_available():
-            metrics["system/gpu_memory_allocated_gb"] = (
-                torch.cuda.memory_allocated() / 1e9
-            )
-            metrics["system/gpu_memory_reserved_gb"] = (
-                torch.cuda.memory_reserved() / 1e9
-            )
+            metrics["system/gpu_memory_allocated_gb"] = torch.cuda.memory_allocated() / 1e9
+            metrics["system/gpu_memory_reserved_gb"] = torch.cuda.memory_reserved() / 1e9
             total = torch.cuda.get_device_properties(0).total_mem
-            metrics["system/gpu_memory_utilization_pct"] = (
-                100.0 * torch.cuda.memory_allocated() / total
-            )
+            metrics["system/gpu_memory_utilization_pct"] = 100.0 * torch.cuda.memory_allocated() / total
     except Exception:
         pass
 
@@ -129,19 +102,8 @@ def log_system_metrics(step):
             pass
 
 
-# ── Evaluation logging ───────────────────────────────────────────────────────
-
-
-def log_eval_results(benchmark_summary, confident_failure_results=None,
-                     save_path=None):
-    """Log evaluation benchmark results to wandb.
-
-    - Scalar metrics under ``eval/{student}/{method}/...``
-    - ``wandb.Table`` for the full benchmark grid
-    - Confident-failure-detection table
-    - Plots from *save_path* as ``wandb.Image``
-    - ``wandb.run.summary`` entries for best AURC per student
-    """
+def log_eval_results(benchmark_summary, confident_failure_results=None, save_path=None):
+    """Push the full benchmark grid + confident-failure table + figures to wandb."""
     try:
         import wandb
 
@@ -151,27 +113,24 @@ def log_eval_results(benchmark_summary, confident_failure_results=None,
         return
 
     try:
-        # ── Scalar metrics ──
-        eval_metrics = {}
+        scalars = {}
         for row in benchmark_summary:
             student = row["student"]
             method = row["method"].replace(" ", "_").replace("-", "_")
             pfx = f"eval/{student}/{method}"
-            eval_metrics[f"{pfx}/miou"] = row["miou"]
-            eval_metrics[f"{pfx}/aurc"] = row["aurc"]
-            eval_metrics[f"{pfx}/risk_at_80"] = row["risk_at_80"]
-            eval_metrics[f"{pfx}/risk_at_90"] = row["risk_at_90"]
-            eval_metrics[f"{pfx}/risk_at_95"] = row["risk_at_95"]
-        wandb.log(eval_metrics)
+            scalars[f"{pfx}/miou"] = row["miou"]
+            scalars[f"{pfx}/aurc"] = row["aurc"]
+            scalars[f"{pfx}/risk_at_80"] = row["risk_at_80"]
+            scalars[f"{pfx}/risk_at_90"] = row["risk_at_90"]
+            scalars[f"{pfx}/risk_at_95"] = row["risk_at_95"]
+        wandb.log(scalars)
 
-        # ── Benchmark table ──
         cols = list(benchmark_summary[0].keys())
         table = wandb.Table(columns=cols)
         for row in benchmark_summary:
             table.add_data(*[row[c] for c in cols])
         wandb.log({"eval/benchmark_table": table})
 
-        # ── Confident-failure table ──
         if confident_failure_results:
             cfd_rows = []
             for sname, cfd in confident_failure_results.items():
@@ -186,17 +145,16 @@ def log_eval_results(benchmark_summary, confident_failure_results=None,
                     cfd_table.add_data(*[r.get(c, None) for c in all_cols])
                 wandb.log({"eval/confident_failure_table": cfd_table})
 
-        # ── Plots ──
         if save_path:
             from pathlib import Path
-
-            images = {}
-            for png in sorted(Path(save_path).glob("*.png")):
-                images[f"eval/plots/{png.stem}"] = wandb.Image(str(png))
+            images = {
+                f"eval/plots/{png.stem}": wandb.Image(str(png))
+                for png in sorted(Path(save_path).glob("*.png"))
+            }
             if images:
                 wandb.log(images)
 
-        # ── Summary: best AURC per student ──
+        # Pin the best (lowest) AURC per student in run summary for quick filtering.
         best = {}
         for row in benchmark_summary:
             s = row["student"]
@@ -212,10 +170,8 @@ def log_eval_results(benchmark_summary, confident_failure_results=None,
 
 
 def finish_wandb():
-    """Finish the wandb run (flush + upload)."""
     try:
         import wandb
-
         if wandb.run is not None:
             wandb.finish()
     except Exception:

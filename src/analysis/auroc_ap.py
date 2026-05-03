@@ -1,4 +1,7 @@
-"""AURC comparison: Guardrail++ vs all baselines. Input: CSV dir (first arg)."""
+"""Horizontal-bar AURC comparison between Guardrail++ and the baselines.
+
+    python src/analysis/auroc_ap.py <csv_dir>
+"""
 import os, sys
 import pandas as pd
 import matplotlib.pyplot as plt

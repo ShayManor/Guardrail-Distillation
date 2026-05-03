@@ -1,4 +1,4 @@
-"""Loss functions for all training stages."""
+"""Losses for all four training stages."""
 
 import torch
 import torch.nn as nn
@@ -7,10 +7,6 @@ import torch.nn.functional as F
 
 IGNORE_INDEX = 255
 
-
-# ──────────────────────────────────────────────
-# Stage 1: Supervised losses
-# ──────────────────────────────────────────────
 
 class CELoss(nn.Module):
     def __init__(self, ignore_index=IGNORE_INDEX, weight=None):
@@ -46,7 +42,7 @@ class DiceLoss(nn.Module):
 
 
 class SegLoss(nn.Module):
-    """Combined CE + Dice for supervised training."""
+    """Stage-1 supervised loss: CE + Dice."""
 
     def __init__(self, alpha_ce=1.0, alpha_dice=0.5, class_weights=None):
         super().__init__()
@@ -59,12 +55,8 @@ class SegLoss(nn.Module):
         return self.alpha_ce * self.ce(logits, target) + self.alpha_dice * self.dice(logits, target)
 
 
-# ──────────────────────────────────────────────
-# Stage 2: Knowledge Distillation loss
-# ──────────────────────────────────────────────
-
 class KDLoss(nn.Module):
-    """KL divergence on softened logits."""
+    """Stage-2 KD: KL on softened logits, normalised by spatial size."""
 
     def __init__(self, temperature=4.0):
         super().__init__()
@@ -74,19 +66,11 @@ class KDLoss(nn.Module):
         s = F.log_softmax(student_logits / self.T, dim=1)
         t = F.softmax(teacher_logits / self.T, dim=1)
         loss = F.kl_div(s, t, reduction="batchmean") * (self.T ** 2)
-        loss = loss / (student_logits.shape[2] * student_logits.shape[3])
-        return loss
+        return loss / (student_logits.shape[2] * student_logits.shape[3])
 
-
-# ──────────────────────────────────────────────
-# Stage 3: Structured KD losses
-# ──────────────────────────────────────────────
 
 class PairwiseAffinityLoss(nn.Module):
-    """
-    Distill pairwise pixel relations from teacher features to student features.
-    Computes cosine similarity matrices and matches them.
-    """
+    """Stage-3 structured KD: match pairwise cosine-similarity matrices."""
 
     def __init__(self, subsample=512):
         super().__init__()
@@ -94,55 +78,35 @@ class PairwiseAffinityLoss(nn.Module):
 
     def forward(self, student_feat, teacher_feat):
         B, C_s, H, W = student_feat.shape
-        _, C_t, _, _ = teacher_feat.shape
 
-        # Align spatial dims
         if student_feat.shape[-2:] != teacher_feat.shape[-2:]:
             teacher_feat = F.interpolate(
                 teacher_feat, size=(H, W), mode="bilinear", align_corners=False
             )
 
-        # Flatten to (B, C, N)
-        s = student_feat.flatten(2)  # (B, C_s, N)
-        t = teacher_feat.flatten(2)  # (B, C_t, N)
+        s = student_feat.flatten(2)
+        t = teacher_feat.flatten(2)
         N = s.shape[2]
 
-        # Subsample pixels for memory efficiency
         if N > self.subsample:
             idx = torch.randperm(N, device=s.device)[:self.subsample]
             s = s[:, :, idx]
             t = t[:, :, idx]
 
-        # Pairwise cosine similarity
         s_norm = F.normalize(s, dim=1)
         t_norm = F.normalize(t, dim=1)
-        s_aff = torch.bmm(s_norm.transpose(1, 2), s_norm)  # (B, n, n)
+        s_aff = torch.bmm(s_norm.transpose(1, 2), s_norm)
         t_aff = torch.bmm(t_norm.transpose(1, 2), t_norm)
-
         return F.mse_loss(s_aff, t_aff)
 
 
-# ──────────────────────────────────────────────
-# Stage 4: Guardrail++ loss (dense per-pixel supervision)
-# ──────────────────────────────────────────────
-
-
 class GuardrailPlusLoss(nn.Module):
-    """Training loss for the Guardrail++ selective-prediction head.
+    """Stage-4 guardrail loss. Routes to the heads specified by supervision_type.
 
-    The active supervision signal is selected by ``supervision_type``:
-
-    * ``'scalar_benefit'`` — image-level regression of ``utility_score``
-      against the scalar teacher-benefit target ``student_risk − teacher_risk``
-      (legacy baseline; used for the ablation in Table 2).
-    * ``'dense_disagree'`` — masked BCE on the per-pixel ``disagree_logits``
-      head against the teacher/student argmax disagreement mask.
-    * ``'dense_gap'`` — masked smooth-L1 on the per-pixel ``gap_pred`` head
-      against ``student_ce − teacher_ce``.
-    * ``'dense_multi'`` (default) — both dense losses summed with weights.
-
-    The scalar path is retained only so we can ablate against it; the paper's
-    primary method is ``dense_multi``.
+    dense_multi (default) sums BCE on disagree_logits and smooth-L1 on gap_pred.
+    Single-head modes drop one of those terms. scalar_benefit is the legacy
+    image-level regression on utility_score, kept only as the ablation row.
+    GT modes use the same heads but with ground-truth-derived targets.
     """
 
     def __init__(
@@ -177,31 +141,23 @@ class GuardrailPlusLoss(nn.Module):
         use_gap = st in ("dense_gap", "dense_multi", "gt_risk")
 
         if use_scalar:
-            l_utility = F.smooth_l1_loss(
-                preds["utility_score"], targets["utility_target"]
-            )
+            l_utility = F.smooth_l1_loss(preds["utility_score"], targets["utility_target"])
             loss = loss + self.scalar_weight * l_utility
             info["utility_loss"] = float(l_utility.item())
 
         if use_disagree:
-            logits = preds["disagree_logits"]
-            tgt = targets["disagree_target"]
-            valid = targets["disagree_valid"]
             per_pix = F.binary_cross_entropy_with_logits(
-                logits, tgt, reduction="none"
+                preds["disagree_logits"], targets["disagree_target"], reduction="none"
             )
-            l_disagree = self._masked_mean(per_pix, valid)
+            l_disagree = self._masked_mean(per_pix, targets["disagree_valid"])
             loss = loss + self.dense_disagree_weight * l_disagree
             info["dense_disagree_loss"] = float(l_disagree.item())
 
         if use_gap:
-            pred = preds["gap_pred"]
-            tgt = targets["gap_target"]
-            valid = targets["gap_valid"]
-            per_pix = F.smooth_l1_loss(pred, tgt, reduction="none")
-            l_gap_dense = self._masked_mean(per_pix, valid)
-            loss = loss + self.dense_gap_weight * l_gap_dense
-            info["dense_gap_loss"] = float(l_gap_dense.item())
+            per_pix = F.smooth_l1_loss(preds["gap_pred"], targets["gap_target"], reduction="none")
+            l_gap = self._masked_mean(per_pix, targets["gap_valid"])
+            loss = loss + self.dense_gap_weight * l_gap
+            info["dense_gap_loss"] = float(l_gap.item())
 
         info["loss"] = float(loss.item())
         return loss, info

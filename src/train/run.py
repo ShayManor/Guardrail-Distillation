@@ -1,14 +1,10 @@
-"""Top-level training/eval CLI for the Guardrail-Distillation pipeline.
+"""CLI for the four-stage pipeline.
 
-Four training stages:
-    1. student_sup   - supervised segmentation training
-    2. student_kd    - knowledge distillation from teacher soft logits
-    3. student_skd   - structured KD (KD + pairwise-affinity)
-    4. guardrail     - Guardrail++ head on frozen student + teacher
+Stages: student_sup → student_kd | student_skd → guardrail. Stages 1–3 train
+the student; stage 4 trains the guardrail head on a frozen student + teacher.
 
-At the end of training (or in ``eval`` mode) the authoritative evaluation is
-done via ``src/eval/full_eval.py``; this script only runs a lightweight
-sanity-eval pass with ``src.eval.eval.run_eval`` for quick per-image stats.
+For paper numbers run src/eval/full_eval.py — the eval mode here is only a
+quick sanity check via src.eval.eval.run_eval.
 """
 
 import os
@@ -25,7 +21,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Guardrail Distillation Pipeline")
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
-    # ── Shared args ────────────────────────────────────────────────────────
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--dataset-path",  default="/root/Guardrail-Distillation/data/cityscapes")
     shared.add_argument("--output-dir",    default=None,
@@ -37,7 +32,6 @@ def parse_args():
     shared.add_argument("--teacher-model", default="nvidia/segformer-b5-finetuned-cityscapes-1024-1024")
     shared.add_argument("--student-model", default="nvidia/mit-b0")
 
-    # ── Train mode ─────────────────────────────────────────────────────────
     train_p = subparsers.add_parser("train", parents=[shared], help="Run training pipeline")
     train_p.add_argument("--epochs-sup",       type=int,   default=10)
     train_p.add_argument("--epochs-kd",        type=int,   default=10)
@@ -82,10 +76,8 @@ def parse_args():
         help="Load initial checkpoints from this dir when using --skip-* flags. "
              "Defaults to --output-dir.")
 
-    # ── Eval mode ──────────────────────────────────────────────────────────
     eval_p = subparsers.add_parser("eval", parents=[shared],
-        help="Quick sanity eval of stage checkpoints. For the authoritative "
-             "evaluation (ACDC / Cityscapes) use src/eval/full_eval.py.")
+        help="Sanity-eval the stage checkpoints. Paper numbers come from src/eval/full_eval.py.")
     eval_p.add_argument("--seed", type=int, default=42)
     eval_p.add_argument("--checkpoints", nargs="+", metavar="NAME:PATH",
         help="Override checkpoint paths, e.g. student_sup:outputs/student_sup.ckpt",
@@ -124,6 +116,7 @@ def build_cfg(args):
 
 
 def make_fresh_student(args, cfg):
+    """Re-init the SegFormer head while keeping pretrained backbone weights."""
     from transformers import AutoModelForSemanticSegmentation, SegformerForSemanticSegmentation, SegformerConfig
     from models import HFSegModelWrapper
 
@@ -157,12 +150,7 @@ def default_checkpoints(output_dir):
 
 
 def run_sanity_eval(args, cfg, checkpoint_map):
-    """Quick per-image eval of the stage checkpoints that exist.
-
-    This is NOT the authoritative paper evaluation — for that use
-    ``src/eval/full_eval.py``, which runs the full ACDC/Cityscapes matrix and
-    emits the CSVs in ``src/analysis/``.
-    """
+    """Quick per-image eval of whatever stage checkpoints exist. Skips guardrail."""
     from src.eval.eval import run_eval
     from src.eval.data import CITYSCAPES_LABELID_TO_TRAINID
     from src.eval.analysis import plot_results
@@ -206,9 +194,8 @@ def run_train_pipeline(args, cfg):
     from train_skd import train_skd
     from train_guardrail import train_guardrail
 
-    # Seed every RNG we control, before dataloader + model init. Any stage that
-    # runs inside this invocation (sup/kd/skd/guardrail) consumes entropy from
-    # this single seed — a second invocation with the same --seed reproduces it.
+    # Single seed for every stage in this invocation; re-running with the
+    # same --seed reproduces it.
     set_seed(cfg.seed)
     print(f"[run] seed={cfg.seed}")
 
@@ -227,10 +214,11 @@ def run_train_pipeline(args, cfg):
             fresh(), train_loader, val_loader, cfg, global_step=global_step
         )
 
+    # KD and SKD both branch off student_sup with a halved LR.
     if not args.skip_kd:
         print(f"  [KD] Starting training ({len(train_loader)} steps/epoch)...")
         cfg_kd = build_cfg(args)
-        cfg_kd.lr = cfg_kd.lr * 0.5
+        cfg_kd.lr *= 0.5
         student_kd = fresh()
         load_checkpoint(student_kd, ckpts["student_sup"], device=cfg_kd.device)
         ckpts["student_kd"], global_step = train_kd(
@@ -239,7 +227,7 @@ def run_train_pipeline(args, cfg):
 
     if not args.skip_skd:
         cfg_skd = build_cfg(args)
-        cfg_skd.lr = cfg_skd.lr * 0.5
+        cfg_skd.lr *= 0.5
         student_skd = fresh()
         load_checkpoint(student_skd, ckpts["student_sup"], device=cfg_skd.device)
         ckpts["student_skd"], global_step = train_skd(

@@ -1,81 +1,25 @@
 #!/usr/bin/env python3
-"""
-Unified paper evaluation script for guardrail distillation / robotic reflexes.
+"""Authoritative paper evaluator. Every paper number flows through this script.
 
-What this script does
----------------------
-1) Evaluates ONE trained student checkpoint on ONE dataset split.
-2) Optionally evaluates a teacher checkpoint and a guardrail checkpoint.
-3) Writes / upserts a set of CSVs that are directly useful for the paper.
-4) On a later run, can aggregate all CSVs into publication-friendly plots.
+Two subcommands:
 
-Outputs (CSV)
--------------
-- runs.csv
-    One row per (student run, dataset split) with global summary metrics.
-- per_image.csv
-    One row per image with risk / confidence / latency / oracle / guardrail scores.
-- per_class.csv
-    One row per class for each run with global IoU and support.
-- risk_coverage.csv
-    One row per run x method x coverage.
-- teacher_budget.csv
-    One row per run x method x teacher_budget.
-- calibration_bins.csv
-    One row per run x method x bin.
-- confident_failures.csv
-    One row per run x MSP threshold x method metrics.
-- latency_samples.csv
-    One row per image containing raw latency samples.
+    full_eval.py ...   — score one (student, optional teacher, optional guardrail)
+                            on one dataset/split, upserting into the paper CSVs.
+    full_eval.py plots — read every CSV under --output-dir and render summaries.
 
-Outputs (figures)
------------------
-- overview.png
-- pareto_by_dataset.png
-- budget_benefit_by_dataset.png
-- budget_effective_miou_by_dataset.png
-- aurc_by_dataset.png
-- calibration_summary.png
+CSVs written under --output-dir:
+    runs.csv               one row per (student run, dataset split)
+    per_image.csv          one row per image with all scores + latencies
+    per_class.csv          one row per (run, class) with IoU + support
+    risk_coverage.csv      one row per (run, method, coverage) point
+    teacher_budget.csv     one row per (run, method, teacher_budget) point
+    calibration_bins.csv   one row per (run, method, bin)
+    confident_failures.csv one row per (run, MSP threshold) with per-method AUROC/AP
+    latency_samples.csv    raw per-image latencies
 
-Important adapter points
-------------------------
-This script is intentionally generic in the evaluation core, but model loading and
-loader construction are project-specific. The default adapters below try to use the
-same project conventions as your current eval_guardrail pipeline:
-    - config.Config
-    - data.build_dataloaders
-    - models.GuardrailHead / HFSegModelWrapper
-    - utils.load_checkpoint
-
-If your repository differs, only edit these adapter functions:
-    - build_eval_loader(...)
-    - build_student_model(...)
-    - build_teacher_model(...)
-    - build_guardrail_model(...)
-
-Example usage
--------------
-Evaluate one run and append all CSVs:
-
-python full_eval.py eval \
-  --run-id cityscapes_val_b2_kd \
-  --dataset-name cityscapes \
-  --dataset-path /root/Guardrail-Distillation/data/cityscapes \
-  --split val \
-  --student-name student_kd \
-  --student-backbone nvidia/mit-b2 \
-  --student-ckpt outputs-mit-b2/student_kd.ckpt \
-  --teacher-backbone nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
-  --guardrail-ckpt outputs-mit-b2/guardrail.ckpt \
-  --guardrail-student-name student_kd \
-  --temperature 2.0 \
-  --mc-dropout-passes 8 \
-  --output-dir paper_eval \
-  --batch-size 4
-
-After evaluating all runs, make summary plots:
-
-python full_eval.py plots --output-dir paper_eval
+If you need to retarget a different project layout, the only adapters worth
+editing are build_eval_loader / build_student_model / build_teacher_model /
+build_guardrail_model.
 """
 
 from __future__ import annotations
@@ -118,17 +62,11 @@ DEFAULT_COVERAGES = [round(x, 2) for x in np.linspace(0.05, 1.0, 20)]
 DEFAULT_CONF_THRESHOLDS = [0.85, 0.90, 0.95, 0.97]
 EPS = 1e-8
 
-# Near-field ROI: bottom fraction of image (closest to ego vehicle)
+# Bottom third of the image — closest to the ego vehicle.
 NEAR_FIELD_FRAC = 1.0 / 3.0
 
-# Cityscapes dynamic class IDs (safety-critical moving objects)
-# person=11, rider=12, car=13, truck=14, bus=15, motorcycle=17, bicycle=18
+# Cityscapes safety-critical movers: person, rider, car, truck, bus, motorcycle, bicycle.
 DYNAMIC_CLASS_IDS = {11, 12, 13, 14, 15, 17, 18}
-
-
-# =============================================================================
-# Small utilities
-# =============================================================================
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -177,13 +115,8 @@ def cuda_sync(device: str) -> None:
         torch.cuda.synchronize()
 
 
-# =============================================================================
-# CSV upsert helpers
-# =============================================================================
-
-
 def upsert_rows(csv_path: Path, rows: List[Dict[str, Any]], key_cols: Sequence[str]) -> None:
-    """Append or replace rows in a CSV based on key columns."""
+    """Append or replace rows in a CSV by key columns."""
     if not rows:
         return
 
@@ -196,7 +129,7 @@ def upsert_rows(csv_path: Path, rows: List[Dict[str, Any]], key_cols: Sequence[s
         old_df = pd.read_csv(csv_path)
         missing_old = [c for c in key_cols if c not in old_df.columns]
         if missing_old:
-            # schema changed; overwrite with only new rows is safer than a broken merge
+            # Schema drift — keeping the old rows would break joins on the missing keys.
             out_df = new_df
         else:
             merged_keys = new_df[key_cols].astype(str).agg("||".join, axis=1).tolist()
@@ -206,11 +139,6 @@ def upsert_rows(csv_path: Path, rows: List[Dict[str, Any]], key_cols: Sequence[s
         out_df = new_df
 
     out_df.to_csv(csv_path, index=False)
-
-
-# =============================================================================
-# Metrics
-# =============================================================================
 
 
 def image_miou(pred: torch.Tensor, gt: torch.Tensor, num_classes: int) -> float:
@@ -262,8 +190,7 @@ def per_class_support(gt: torch.Tensor, num_classes: int) -> List[int]:
 def image_miou_roi(
     pred: torch.Tensor, gt: torch.Tensor, num_classes: int, roi_frac: float = NEAR_FIELD_FRAC,
 ) -> Tuple[float, int]:
-    """Compute mIoU on the bottom `roi_frac` of the image (near-field / ego lane region).
-    Returns (miou, n_valid_pixels_in_roi). Returns (0.0, 0) if no valid pixels."""
+    """mIoU on the near-field crop. Returns (miou, n_valid_roi_pixels)."""
     H = gt.shape[0]
     roi_start = int(H * (1.0 - roi_frac))
     pred_roi = pred[roi_start:]
@@ -289,11 +216,9 @@ def image_miou_roi(
 def image_miou_dynamic(
     pred: torch.Tensor, gt: torch.Tensor, dynamic_ids: set = DYNAMIC_CLASS_IDS,
 ) -> Tuple[float, int]:
-    """Compute mIoU restricted to dynamic / safety-critical classes only.
-    Returns (miou, n_valid_pixels_with_dynamic_gt). Returns (0.0, 0) if none present."""
+    """mIoU over pixels whose GT is a safety-critical mover. Returns (miou, n_dynamic_pixels)."""
     valid = gt != IGNORE_INDEX
     pred_v, gt_v = pred[valid], gt[valid]
-    # Restrict to pixels where gt is one of the dynamic classes
     dyn_mask = torch.zeros_like(gt_v, dtype=torch.bool)
     for c in dynamic_ids:
         dyn_mask |= (gt_v == c)
@@ -315,10 +240,7 @@ def image_miou_dynamic(
 
 
 def compute_aurc(risks: np.ndarray, keep_scores: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
-    """
-    Sort by descending keep-score (higher means 'safer to keep'), then compute cumulative mean risk.
-    Lower AURC is better.
-    """
+    """Area under the risk-coverage curve. Lower is better. Sorts by descending keep-score."""
     order = np.argsort(-keep_scores)
     risks_sorted = risks[order]
     n = len(risks_sorted)
@@ -387,13 +309,10 @@ def compute_confident_failure_table(
     score_cols: Dict[str, str],
     failure_label: str = "top20",
 ) -> List[Dict[str, Any]]:
-    """
-    Labels 'failure' among confident examples.
-    failure_label:
-      - 'median': risk > median risk
-      - 'top20': risk in worst 20%
-      - 'top10': risk in worst 10%
-    score_cols maps method name -> column where HIGHER means 'more likely to fail'.
+    """For each MSP threshold, score how well each method ranks the worst-risk images.
+
+    failure_label picks the per-image risk cutoff: median | top20 | top10.
+    score_cols maps method → column where higher = more likely to fail.
     """
     if df_img.empty:
         return []
@@ -402,7 +321,7 @@ def compute_confident_failure_table(
         cutoff = float(df_img["student_risk"].median())
     elif failure_label == "top10":
         cutoff = float(df_img["student_risk"].quantile(0.90))
-    else:  # default top20
+    else:
         cutoff = float(df_img["student_risk"].quantile(0.80))
 
     rows: List[Dict[str, Any]] = []
@@ -436,11 +355,6 @@ def compute_confident_failure_table(
     return rows
 
 
-# =============================================================================
-# Adapter hooks: edit only these if your project structure differs.
-# =============================================================================
-
-
 @dataclass
 class EvalConfig:
     dataset_name: str
@@ -469,12 +383,10 @@ class ForwardAdapter(nn.Module):
 
 
 def build_eval_loader(cfg: EvalConfig):
-    """
-    Build validation DataLoader.
-    - cityscapes: delegates to project's build_dataloaders
-    - acdc: builds ACDCDataset directly (fog/night/rain/snow/all)
-    - idd:  builds IDDDataset directly (cs19 trainIds, identity label map)
-    - bdd:  builds BDDDataset directly (cs19 trainIds, identity label map)
+    """Build the val DataLoader for the requested dataset.
+
+    cityscapes goes through the project's build_dataloaders; acdc/idd/bdd
+    construct their own dataset class (all use cs19 trainIds).
     """
     if cfg.dataset_name == "acdc":
         return _build_acdc_loader(cfg)
@@ -483,15 +395,8 @@ def build_eval_loader(cfg: EvalConfig):
     if cfg.dataset_name == "bdd":
         return _build_bdd_loader(cfg)
 
-    # ── Cityscapes (default) ─────────────────────────────────────────────
-    try:
-        from src.train.config import Config
-        from src.train.data import build_dataloaders
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Could not import your project's Config / build_dataloaders. "
-            "Edit build_eval_loader(...) in full_eval.py to match your repo."
-        ) from exc
+    from src.train.config import Config
+    from src.train.data import build_dataloaders
 
     project_cfg = Config(
         dataset_path=cfg.dataset_path,
@@ -521,11 +426,7 @@ def build_eval_loader(cfg: EvalConfig):
     return val_loader
 
 
-# ── IDD loader ───────────────────────────────────────────────────────────────
-
-
 def _build_idd_loader(cfg: EvalConfig):
-    """Build a DataLoader for India Driving Dataset (cs19 trainIds)."""
     from src.train.data import IDDDataset
 
     ds = IDDDataset(cfg.dataset_path, split=cfg.split, crop_size=512)
@@ -540,7 +441,6 @@ def _build_idd_loader(cfg: EvalConfig):
 
 
 def _build_bdd_loader(cfg: EvalConfig):
-    """Build a DataLoader for BDD100K Segmentation (cs19 trainIds)."""
     from src.train.data import BDDDataset
 
     ds = BDDDataset(cfg.dataset_path, split=cfg.split, crop_size=512)
@@ -677,19 +577,13 @@ def _build_acdc_loader(cfg: EvalConfig):
 
 
 def build_student_model(cfg: EvalConfig, checkpoint_path: str) -> nn.Module:
-    try:
-        from transformers import (
-            AutoModelForSemanticSegmentation,
-            SegformerConfig,
-            SegformerForSemanticSegmentation,
-        )
-        from src.train.models import HFSegModelWrapper
-        from src.train.utils import load_checkpoint
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Could not import your project's student model helpers. "
-            "Edit build_student_model(...) in full_eval.py to match your repo."
-        ) from exc
+    from transformers import (
+        AutoModelForSemanticSegmentation,
+        SegformerConfig,
+        SegformerForSemanticSegmentation,
+    )
+    from src.train.models import HFSegModelWrapper
+    from src.train.utils import load_checkpoint
 
     backbone = AutoModelForSemanticSegmentation.from_pretrained(cfg.student_backbone, local_files_only=True)
     s_cfg = SegformerConfig.from_pretrained(cfg.student_backbone, local_files_only=True)
@@ -705,14 +599,8 @@ def build_student_model(cfg: EvalConfig, checkpoint_path: str) -> nn.Module:
 def build_teacher_model(cfg: EvalConfig) -> Optional[nn.Module]:
     if not cfg.teacher_backbone:
         return None
-    try:
-        from transformers import AutoModelForSemanticSegmentation
-        from src.train.models import HFSegModelWrapper
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Could not import your project's teacher model helpers. "
-            "Edit build_teacher_model(...) in full_eval.py to match your repo."
-        ) from exc
+    from transformers import AutoModelForSemanticSegmentation
+    from src.train.models import HFSegModelWrapper
 
     raw = AutoModelForSemanticSegmentation.from_pretrained(cfg.teacher_backbone, local_files_only=True)
     wrapped = HFSegModelWrapper(raw, cfg.num_classes)
@@ -722,12 +610,7 @@ def build_teacher_model(cfg: EvalConfig) -> Optional[nn.Module]:
 def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Optional[nn.Module]:
     if not checkpoint_path:
         return None
-    try:
-        from src.train.models import GuardrailPlusHead
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Could not import GuardrailPlusHead from src.train.models."
-        ) from exc
+    from src.train.models import GuardrailPlusHead
 
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
     state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
@@ -749,15 +632,10 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch)
     model.load_state_dict(state_dict)
     model = model.to(cfg.device).eval()
-    # Stash metadata for downstream logging.
+    # Stash metadata so per_image rows can self-describe.
     model._supervision_type = supervision_type  # type: ignore[attr-defined]
     model._use_student_features = use_student_features_ckpt  # type: ignore[attr-defined]
     return model
-
-
-# =============================================================================
-# Batch normalization / forward helpers
-# =============================================================================
 
 
 def unpack_batch(batch: Any, batch_idx: int, base_index: int) -> Tuple[torch.Tensor, torch.Tensor, List[Dict[str, Any]]]:
@@ -785,7 +663,7 @@ def unpack_batch(batch: Any, batch_idx: int, base_index: int) -> Tuple[torch.Ten
     bsz = int(images.shape[0])
     meta_list: List[Dict[str, Any]] = []
     if isinstance(metas, dict):
-        # batch dict of lists
+        # Dict-of-lists shape: split into per-row dicts.
         for i in range(bsz):
             row = {}
             for k, v in metas.items():
@@ -833,11 +711,6 @@ def enable_dropout_only(model: nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, (nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
             module.train()
-
-
-# =============================================================================
-# Core evaluation: one run -> rows for all CSVs
-# =============================================================================
 
 
 def evaluate_one_run(args: argparse.Namespace) -> None:
@@ -935,9 +808,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     teacher_class_union = np.zeros(cfg.num_classes, dtype=np.int64)
 
     seen_images = 0
-    eval_image_res = ""  # will be set from first batch
+    eval_image_res = ""
 
-    # Main loop
     student.eval()
     if teacher is not None:
         teacher.eval()
@@ -952,11 +824,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         labels = labels.to(cfg.device)
         bsz = int(images.shape[0])
 
-        # Capture eval image resolution from first batch
         if not eval_image_res:
             eval_image_res = f"{images.shape[2]}x{images.shape[3]}"
 
-        # Student forward
         with Timer(cfg.device) as t_student:
             try:
                 out = student(images, return_features=True)
@@ -970,10 +840,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             student_feat = None
         student_ms_img = t_student.ms / max(bsz, 1)
 
-        # Temperature-scaled logits (for confidence only)
+        # Temperature-scaled logits — used only for confidence baselines, not predictions.
         temp_logits = student_logits / max(args.temperature, EPS)
 
-        # Teacher forward
         teacher_logits = None
         teacher_ms_img = 0.0
         if teacher is not None:
@@ -982,10 +851,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             teacher_logits = teacher_out[0] if isinstance(teacher_out, tuple) else teacher_out
             teacher_ms_img = t_teacher.ms / max(bsz, 1)
 
-        # Guardrail forward
         guard_raw = None
         guard_ms_img = 0.0
-        adapt_logits = None  # kept for schema compatibility; no adaptive preprocessing now
         if guardrail is not None and args.guardrail_student_name == args.student_name:
             _guard_feat = student_feat if guardrail_expects_feat else None
             with Timer(cfg.device) as t_guard:
@@ -995,7 +862,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     guard_raw = guardrail(student_logits)
             guard_ms_img = t_guard.ms / max(bsz, 1)
 
-        # MC dropout forward (uncertainty only)
+        # MC dropout: per-pixel predictive entropy + mutual information.
         mc_entropies: Optional[List[float]] = None
         mc_mutual_infos: Optional[List[float]] = None
         if args.mc_dropout_passes > 0:
@@ -1049,11 +916,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             student_risk = 1.0 - student_miou
             student_acc = image_pixel_acc(pred, gt)
 
-            # Near-field ROI risk (bottom 1/3 of image)
             student_miou_near, n_near = image_miou_roi(pred, gt, cfg.num_classes)
             student_risk_near = 1.0 - student_miou_near
 
-            # Dynamic class risk (person, rider, car, truck, bus, motorcycle, bicycle)
             student_miou_dynamic, n_dynamic = image_miou_dynamic(pred, gt)
             student_risk_dynamic = 1.0 - student_miou_dynamic
 
@@ -1072,10 +937,10 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             pixel_ent = -(probs_valid * (probs_valid + EPS).log()).sum(dim=0)
             pixel_ent_temp = -(temp_probs_valid * (temp_probs_valid + EPS).log()).sum(dim=0)
 
-            # Post-hoc baselines: Energy Score and MaxLogit (no retraining)
-            logits_valid = student_logits[i][:, valid]  # [C, N_valid]
-            pixel_energy = -torch.logsumexp(logits_valid, dim=0)  # [N_valid]
-            pixel_max_logit = logits_valid.max(dim=0).values      # [N_valid]
+            # Post-hoc baselines: energy score and max-logit (no retraining).
+            logits_valid = student_logits[i][:, valid]
+            pixel_energy = -torch.logsumexp(logits_valid, dim=0)
+            pixel_max_logit = logits_valid.max(dim=0).values
 
             row: Dict[str, Any] = {
                 "run_id": args.run_id,
@@ -1121,7 +986,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 row["mc_dropout_latency_ms"] = float(mc_latency_per_img)
 
             if guard_raw is not None and isinstance(guard_raw, dict):
-                # ── Dense disagreement head (primary in dense_multi mode) ──
                 if "disagree_logits" in guard_raw:
                     dl = guard_raw["disagree_logits"][i]
                     if dl.ndim == 2 and dl.shape == gt.shape:
@@ -1133,7 +997,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                         row["guardrailpp_utility_dense_bce"] = util_bce
                         row["guardrailpp_keep_dense_bce"] = 1.0 - util_bce
 
-                # ── Dense signed risk-gap head (primary alternative) ──
                 if "gap_pred" in guard_raw:
                     gp = guard_raw["gap_pred"][i]
                     if gp.ndim == 2 and gp.shape == gt.shape:
@@ -1143,25 +1006,18 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     if gp_valid.numel() > 0:
                         util_gap_raw = float(gp_valid.mean().item())
                         row["guardrailpp_utility_dense_gap_raw"] = util_gap_raw
-                        util_gap = float(
-                            torch.sigmoid(torch.tensor(util_gap_raw)).item()
-                        )
+                        util_gap = float(torch.sigmoid(torch.tensor(util_gap_raw)).item())
                         row["guardrailpp_utility_dense_gap"] = util_gap
                         row["guardrailpp_keep_dense_gap"] = 1.0 - util_gap
 
-                # ── Scalar utility head (only trained under scalar_benefit
-                #     supervision; kept for the ablation) ──
+                # Trained only under scalar_benefit; kept for the ablation row.
                 if "utility_score" in guard_raw:
-                    utility = float(guard_raw["utility_score"][i].item())
-                    utility = max(0.0, min(1.0, utility))
+                    utility = max(0.0, min(1.0, float(guard_raw["utility_score"][i].item())))
                     row["guardrailpp_utility_scalar"] = utility
 
-                # ── Primary `guardrailpp_utility` alias used by plots /
-                #     legacy tables. Key off the checkpoint's supervision_type
-                #     so dense_disagree picks its trained dense_bce head and
-                #     dense_gap picks its trained dense_gap head, rather than
-                #     falling through to whichever untrained output the model
-                #     still emits from shared weights. ──
+                # Pick the head that was actually trained for this checkpoint's
+                # supervision_type. Otherwise the alias falls through to an
+                # untrained output and reports a meaningless AUROC.
                 sup_type = getattr(guardrail, "_supervision_type", "") or ""
                 dense_gap_val = row.get("guardrailpp_utility_dense_gap")
                 dense_bce_val = row.get("guardrailpp_utility_dense_bce")
@@ -1228,7 +1084,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     "teacher_miou_dynamic": teacher_miou_dynamic,
                     "teacher_risk_dynamic": teacher_risk_dynamic,
                     "teacher_benefit_dynamic": max(student_risk_dynamic - teacher_risk_dynamic, 0.0),
-                    "teacher_gain": max(student_miou - teacher_miou, 0.0) * -1.0,  # overwritten below for readability
+                    "teacher_gain": 0.0,  # overwritten below to equal teacher_benefit
                     "teacher_benefit": max(student_risk - teacher_risk, 0.0),
                     "teacher_gap": float(teacher_better_mask.float().mean().item()),
                     "student_better_gap": float(student_better_mask.float().mean().item()),
@@ -1263,9 +1119,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
 
     df_img = pd.DataFrame(per_image_rows)
 
-    # -------------------------------------------------------------------------
-    # Per-class dataset rows
-    # -------------------------------------------------------------------------
     class_rows: List[Dict[str, Any]] = []
     for c in range(cfg.num_classes):
         iou = float(class_inter[c] / class_union[c]) if class_union[c] > 0 else np.nan
@@ -1290,15 +1143,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         }
         class_rows.append(row_cls)
 
-    # -------------------------------------------------------------------------
-    # Risk-coverage rows
-    # -------------------------------------------------------------------------
+    # Per-method "keep" scores: higher = more confident, kept first under coverage.
     score_keep_map: Dict[str, np.ndarray] = {
         "msp": df_img["student_msp"].values,
         "neg_entropy": (-df_img["student_entropy"].values),
         "temp_msp": df_img["temp_msp"].values,
-        "neg_energy": (-df_img["energy_score"].values),   # higher = more confident
-        "max_logit": df_img["max_logit"].values,           # higher = more confident
+        "neg_energy": (-df_img["energy_score"].values),
+        "max_logit": df_img["max_logit"].values,
     }
     if "mc_entropy" in df_img.columns:
         score_keep_map["mc_dropout"] = -df_img["mc_entropy"].values
@@ -1308,7 +1159,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         score_keep_map["guardrailpp_keep"] = df_img["guardrailpp_keep"].values
     if "oracle_keep" in df_img.columns:
         score_keep_map["teacher_oracle"] = df_img["oracle_keep"].values
-    # True selective-prediction oracle: rank by actual quality (ground truth at test time)
+    # True oracle ranks by realised quality — upper bound for any selective predictor.
     score_keep_map["oracle"] = df_img["student_miou"].values
 
     risk_cov_rows: List[Dict[str, Any]] = []
@@ -1331,16 +1182,14 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "aurc": float(aurc),
             })
 
-    # -------------------------------------------------------------------------
-    # Teacher-budget rows (effective system performance under fallback)
-    # -------------------------------------------------------------------------
+    # Teacher-fallback rows: per-method failure score (higher = defer first).
     budget_rows: List[Dict[str, Any]] = []
     teacher_budget_methods = {
-        "msp": 1.0 - df_img["student_msp"].values,  # high = more likely to fallback
+        "msp": 1.0 - df_img["student_msp"].values,
         "entropy": df_img["student_entropy"].values,
         "temp_msp": 1.0 - df_img["temp_msp"].values,
-        "energy": df_img["energy_score"].values,       # less negative = less confident = fallback
-        "max_logit": -df_img["max_logit"].values,      # lower max logit = less confident = fallback
+        "energy": df_img["energy_score"].values,
+        "max_logit": -df_img["max_logit"].values,
     }
     if "mc_entropy" in df_img.columns:
         teacher_budget_methods["mc_dropout"] = df_img["mc_entropy"].values
@@ -1352,7 +1201,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         teacher_budget_methods["oracle"] = df_img["oracle_fail"].values
     teacher_budget_methods["random"] = np.random.RandomState(args.seed).rand(len(df_img))
 
-    # If calibrated utility available, add λ-sweep method
+    # Optional isotonic-calibrated utility (loaded from disk if a fit exists).
     calib_path = Path(args.output_dir) / "guardrail_calibrator.pkl"
     if "guardrailpp_utility" in df_img.columns and calib_path.exists():
         import pickle
@@ -1366,7 +1215,7 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     total_teacher_benefit = float(df_img["teacher_benefit"].sum()) if teacher_available else 0.0
 
     for method, fail_scores in teacher_budget_methods.items():
-        order = np.argsort(-fail_scores)  # highest failure score => fallback first
+        order = np.argsort(-fail_scores)
         n = len(order)
         for budget in budgets:
             k = int(round(budget * n))
@@ -1418,9 +1267,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "total_teacher_benefit": total_teacher_benefit,
             })
 
-    # -------------------------------------------------------------------------
-    # Calibration rows
-    # -------------------------------------------------------------------------
     calib_rows: List[Dict[str, Any]] = []
     actual_quality = 1.0 - df_img["student_risk"].values.astype(float)
     calib_sources: Dict[str, np.ndarray] = {
@@ -1447,15 +1293,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 **b,
             })
 
-    # -------------------------------------------------------------------------
-    # Confident failure rows
-    # -------------------------------------------------------------------------
+    # Each "fail score" is oriented so higher = more likely to be a confident failure.
     fail_score_cols = {
         "msp": 1.0 - df_img["student_msp"].values.astype(float),
         "entropy": df_img["student_entropy"].values.astype(float),
         "temp_msp": 1.0 - df_img["temp_msp"].values.astype(float),
-        "energy": df_img["energy_score"].values.astype(float),         # higher (less neg) = less confident
-        "max_logit": -df_img["max_logit"].values.astype(float),        # negate: lower logit = more likely to fail
+        "energy": df_img["energy_score"].values.astype(float),
+        "max_logit": -df_img["max_logit"].values.astype(float),
     }
     df_fail = df_img.copy()
     df_fail["msp_fail_score"] = fail_score_cols["msp"]
@@ -1473,13 +1317,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if "mc_entropy" in df_fail.columns:
         df_fail["mc_dropout_fail_score"] = df_fail["mc_entropy"].astype(float)
         score_cols["mc_dropout"] = "mc_dropout_fail_score"
-    # `guardrail_risk` is aliased to the primary dense utility (dense_gap
-    # fallback dense_bce fallback scalar) so this row always uses the trained
-    # column when available.
+    # `guardrail_risk` is the alias to whichever head was actually trained.
+    # The dense_{bce,gap} rows are also recorded so the CSV carries both
+    # alongside the aliased "guardrail" row.
     if "guardrail_risk" in df_fail.columns:
         score_cols["guardrail"] = "guardrail_risk"
-    # Register the dense heads as their own rows so the CSV carries both in
-    # addition to the aliased "guardrail" row.
     if "guardrailpp_utility_dense_bce" in df_fail.columns:
         score_cols["dense_bce"] = "guardrailpp_utility_dense_bce"
     if "guardrailpp_utility_dense_gap" in df_fail.columns:
@@ -1501,9 +1343,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             **r,
         })
 
-    # -------------------------------------------------------------------------
-    # Summary run row
-    # -------------------------------------------------------------------------
     run_row: Dict[str, Any] = {
         "run_id": args.run_id,
         "timestamp": now_ts(),
@@ -1593,9 +1432,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     run_row[f"{method}_miou_at_{int(budget*100)}"] = float(match[0]["effective_miou"])
                     run_row[f"{method}_lat_at_{int(budget*100)}"] = float(match[0]["avg_latency_ms"])
 
-    # -------------------------------------------------------------------------
-    # Save / upsert all CSVs
-    # -------------------------------------------------------------------------
     upsert_rows(csv_dir / "runs.csv", [run_row], key_cols=["run_id"])
     upsert_rows(csv_dir / "per_image.csv", per_image_rows, key_cols=["run_id", "image_id"])
     upsert_rows(csv_dir / "per_class.csv", class_rows, key_cols=["run_id", "class_id"])
@@ -1607,7 +1443,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
 
     print(f"[done] wrote CSVs under {csv_dir}")
 
-    # Make one quick pretty chart for this run immediately.
     quick_plot_for_run(
         df_img=df_img,
         risk_cov_rows=pd.DataFrame(risk_cov_rows),
@@ -1617,11 +1452,6 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         title=args.run_id,
     )
     print(f"[done] quick plot -> {fig_dir / f'quicklook_{args.run_id}.png'}")
-
-
-# =============================================================================
-# Plotting
-# =============================================================================
 
 
 def quick_plot_for_run(
@@ -1634,7 +1464,6 @@ def quick_plot_for_run(
 ) -> None:
     fig = plt.figure(figsize=(16, 10))
 
-    # 1) MSP vs risk
     ax1 = plt.subplot(2, 2, 1)
     sc = ax1.scatter(df_img["student_msp"], df_img["student_risk"], c=df_img["student_risk"], s=10, alpha=0.5)
     ax1.set_title("MSP vs Image Risk")
@@ -1643,33 +1472,24 @@ def quick_plot_for_run(
     ax1.grid(True, alpha=0.3)
     plt.colorbar(sc, ax=ax1)
 
-    # 2) Risk-coverage
     ax2 = plt.subplot(2, 2, 2)
     for method, sub in risk_cov_rows.groupby("method"):
         ax2.plot(sub["coverage"], sub["risk"], label=method)
-    ax2.set_title("Risk-Coverage")
-    ax2.set_xlabel("Coverage")
-    ax2.set_ylabel("Risk")
+    ax2.set(title="Risk-Coverage", xlabel="Coverage", ylabel="Risk")
     ax2.grid(True, alpha=0.3)
     ax2.legend(fontsize=8)
 
-    # 3) Teacher budget -> effective miou
     ax3 = plt.subplot(2, 2, 3)
     for method, sub in budget_rows.groupby("method"):
         ax3.plot(sub["teacher_budget"], sub["effective_miou"], label=method)
-    ax3.set_title("Teacher Budget vs Effective mIoU")
-    ax3.set_xlabel("Teacher budget")
-    ax3.set_ylabel("Effective mIoU")
+    ax3.set(title="Teacher Budget vs Effective mIoU", xlabel="Teacher budget", ylabel="Effective mIoU")
     ax3.grid(True, alpha=0.3)
     ax3.legend(fontsize=8)
 
-    # 4) Teacher budget -> avg latency
     ax4 = plt.subplot(2, 2, 4)
     for method, sub in budget_rows.groupby("method"):
         ax4.plot(sub["teacher_budget"], sub["avg_latency_ms"], label=method)
-    ax4.set_title("Teacher Budget vs Avg Latency")
-    ax4.set_xlabel("Teacher budget")
-    ax4.set_ylabel("Avg latency (ms)")
+    ax4.set(title="Teacher Budget vs Avg Latency", xlabel="Teacher budget", ylabel="Avg latency (ms)")
     ax4.grid(True, alpha=0.3)
     ax4.legend(fontsize=8)
 
@@ -1701,9 +1521,7 @@ def make_all_plots(output_dir: str) -> None:
     df_budget = pd.read_csv(budget_csv)
     df_calib = pd.read_csv(calib_csv) if calib_csv.exists() else pd.DataFrame()
 
-    # ------------------------------------------------------------------
-    # Figure 1: Pareto by dataset (use 10% teacher budget as main op point)
-    # ------------------------------------------------------------------
+    # Pareto by dataset, anchored at the 10% teacher-budget operating point.
     fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()), figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
     for ax, (dataset, sub) in zip(axes[0], df_budget.groupby("dataset_name")):
         op = sub[np.isclose(sub["teacher_budget"], 0.10)]
@@ -1720,9 +1538,7 @@ def make_all_plots(output_dir: str) -> None:
     fig.savefig(fig_dir / "pareto_by_dataset.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------------
-    # Figure 2: Teacher budget -> benefit recovered by dataset
-    # ------------------------------------------------------------------
+    # Teacher budget vs recovered benefit, per dataset.
     fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()), figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
     for ax, (dataset, sub) in zip(axes[0], df_budget.groupby("dataset_name")):
         agg = sub.groupby(["teacher_budget", "method"], as_index=False)["benefit_recovered_frac"].mean()
@@ -1737,9 +1553,7 @@ def make_all_plots(output_dir: str) -> None:
     fig.savefig(fig_dir / "budget_benefit_by_dataset.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------------
-    # Figure 3: Teacher budget -> effective mIoU by dataset
-    # ------------------------------------------------------------------
+    # Teacher budget vs effective mIoU, per dataset.
     fig, axes = plt.subplots(1, max(1, df_budget["dataset_name"].nunique()), figsize=(7 * max(1, df_budget["dataset_name"].nunique()), 5), squeeze=False)
     for ax, (dataset, sub) in zip(axes[0], df_budget.groupby("dataset_name")):
         agg = sub.groupby(["teacher_budget", "method"], as_index=False)["effective_miou"].mean()
@@ -1754,9 +1568,7 @@ def make_all_plots(output_dir: str) -> None:
     fig.savefig(fig_dir / "budget_effective_miou_by_dataset.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------------
-    # Figure 4: AURC by dataset / method
-    # ------------------------------------------------------------------
+    # AURC bars by (dataset, student, method).
     aurc_rows = df_rc.groupby(["dataset_name", "student_name", "method"], as_index=False)["aurc"].mean()
     n_ds = max(1, aurc_rows["dataset_name"].nunique())
     fig, axes = plt.subplots(1, n_ds, figsize=(7 * n_ds, 5), squeeze=False)
@@ -1781,9 +1593,7 @@ def make_all_plots(output_dir: str) -> None:
     fig.savefig(fig_dir / "aurc_by_dataset.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------------
-    # Figure 5: Calibration summary (predicted quality vs actual quality)
-    # ------------------------------------------------------------------
+    # Reliability diagrams (predicted quality vs realised quality).
     if not df_calib.empty:
         n_ds = max(1, df_calib["dataset_name"].nunique())
         fig, axes = plt.subplots(1, n_ds, figsize=(7 * n_ds, 5), squeeze=False)
@@ -1801,9 +1611,7 @@ def make_all_plots(output_dir: str) -> None:
         fig.savefig(fig_dir / "calibration_summary.png", dpi=180, bbox_inches="tight")
         plt.close(fig)
 
-    # ------------------------------------------------------------------
-    # Figure 6: One combined overview image
-    # ------------------------------------------------------------------
+    # 2x2 overview combining the most useful summary panels.
     fig = plt.figure(figsize=(16, 10))
 
     ax1 = plt.subplot(2, 2, 1)
@@ -1852,17 +1660,11 @@ def make_all_plots(output_dir: str) -> None:
     print(f"[done] wrote figures under {fig_dir}")
 
 
-# =============================================================================
-# CLI
-# =============================================================================
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified paper evaluation for guardrail distillation.")
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    # eval mode
-    p_eval = sub.add_parser("eval", help="Evaluate one trained student on one dataset split and append CSVs.")
+    p_eval = sub.add_parser("eval", help="Score one student/teacher/guardrail trio and append all CSVs.")
     p_eval.add_argument("--run-id", required=True, help="Unique run key, e.g. cityscapes_val_b2_kd")
     p_eval.add_argument("--dataset-name", required=True, help="cityscapes | acdc | idd")
     p_eval.add_argument("--dataset-path", required=True)
@@ -1893,8 +1695,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p_eval.add_argument("--output-dir", default="paper_eval")
 
-    # plots mode
-    p_plots = sub.add_parser("plots", help="Aggregate existing CSVs and make summary plots.")
+    p_plots = sub.add_parser("plots", help="Aggregate existing CSVs and render summary figures.")
     p_plots.add_argument("--output-dir", default="paper_eval")
 
     return parser
@@ -1913,7 +1714,7 @@ def main() -> None:
                 args.run_id = f"{base_run_id}_s{seed}"
                 print(f"\n{'='*60}\n[multi-seed] run_id={args.run_id}  seed={seed}\n{'='*60}")
                 evaluate_one_run(args)
-            args.run_id = base_run_id  # restore
+            args.run_id = base_run_id
         else:
             evaluate_one_run(args)
     elif args.mode == "plots":

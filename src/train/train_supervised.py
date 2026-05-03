@@ -1,4 +1,4 @@
-"""Stage 1: Train student with supervised loss (CE + Dice)."""
+"""Stage 1: train the student with CE + Dice."""
 
 import time
 
@@ -10,7 +10,7 @@ from _wandb_helpers import wandb_log, log_system_metrics
 
 
 def train_supervised(student, train_loader, val_loader, cfg, global_step=0):
-    """Train student_sup. Returns (path, global_step)."""
+    """Returns (best_checkpoint_path, global_step)."""
     print("\n" + "=" * 60)
     print("STAGE 1: Supervised Student Training")
     print("=" * 60)
@@ -18,12 +18,14 @@ def train_supervised(student, train_loader, val_loader, cfg, global_step=0):
     device = cfg.device
     student = student.to(device).train()
 
+    # Up-weight Cityscapes rare classes (wall, fence, pole, traffic light,
+    # rider, truck, bus, train, motorcycle) to counter the long-tail.
     class_weights = torch.ones(cfg.num_classes, device=device)
-    rare_classes = [3, 4, 5, 6, 12, 14, 15, 16, 17]
-    # 3=wall, 4=fence, 5=pole, 6=traffic light, 12=rider, 14=truck, 15=bus, 16=train, 17=motorcycle
-    for c in rare_classes:
+    for c in (3, 4, 5, 6, 12, 14, 15, 16, 17):
         class_weights[c] = 3.0
     criterion = SegLoss(alpha_ce=cfg.alpha_ce, alpha_dice=cfg.alpha_dice, class_weights=class_weights)
+
+    # Decode head gets a much higher LR than the pretrained backbone.
     backbone_params = [p for n, p in student.named_parameters() if "decode_head" not in n and p.requires_grad]
     head_params = [p for n, p in student.named_parameters() if "decode_head" in n and p.requires_grad]
     optimizer = torch.optim.AdamW([
@@ -51,13 +53,14 @@ def train_supervised(student, train_loader, val_loader, cfg, global_step=0):
             optimizer.zero_grad()
             scaler.scale(loss).backward()
 
-            # Gradient norm (unscaled) for monitoring
             grad_norm = None
             if (step + 1) % cfg.log_every == 0:
                 _s = scaler.get_scale()
                 _gn = sum(p.grad.data.norm(2).item() ** 2 for p in student.parameters() if p.grad is not None)
                 grad_norm = (_gn ** 0.5) / max(_s, 1e-12)
 
+            # Skip the LR step on iterations where the AMP scaler skipped optimizer.step()
+            # (otherwise the scheduler would walk past steps the model never saw).
             prev_scale = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
@@ -88,7 +91,6 @@ def train_supervised(student, train_loader, val_loader, cfg, global_step=0):
                 log_system_metrics(global_step)
                 log_interval_start = time.time()
 
-        # Eval
         if (epoch + 1) % cfg.eval_every == 0:
             miou = evaluate(student, val_loader, cfg.num_classes, device)
             print(f"  [Sup] Epoch {epoch+1} val mIoU={miou:.4f}")

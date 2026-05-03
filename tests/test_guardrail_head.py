@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""Smoke tests for the simplified Guardrail++ head and loss.
+"""GuardrailPlusHead/loss smoke tests. <5s on CPU. Run before any 12h slurm job.
 
-These are fast (<5s on CPU) sanity checks that must pass before launching
-12-hour slurm jobs. They cover:
-  - forward-pass shapes for every output
-  - all four supervision_type modes produce finite loss
-  - all four modes yield non-zero gradients on the expected heads
-  - checkpoint save/load round-trip
-  - config defaults are sane
+Covers forward shapes, every supervision_type (finite loss + correct gradient
+flow), checkpoint round-trip, and config defaults.
 
-Run with:  python tests/test_guardrail_head.py
+    python tests/test_guardrail_head.py
 """
 import os
 import sys
@@ -45,8 +40,7 @@ def make_inputs(B=2, C=19, H=32, W=64, feat_ch=32, device="cpu"):
     logits = torch.randn(B, C, H, W, device=device)
     feats = torch.randn(B, feat_ch, H // 4, W // 4, device=device)
     labels = torch.randint(0, C, (B, H, W), device=device)
-    # Inject some ignore pixels
-    labels[:, 0, :8] = 255
+    labels[:, 0, :8] = 255  # exercise the ignore-index path
     return logits, feats, labels
 
 

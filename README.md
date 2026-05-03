@@ -1,155 +1,196 @@
 # Guardrail-Distillation
 
-Light-weight, OOD-aware selective prediction for edge-deployed semantic
-segmentation students distilled from a large vision teacher.
+Selective prediction for edge-deployed semantic-segmentation students that
+have been distilled from a large vision teacher.
 
-We train a 4-stage pipeline:
+A small SegFormer student (mit-b0/b1/b2, distilled from
+`nvidia/segformer-b5-finetuned-cityscapes-1024-1024`) is paired with a
+lightweight **GuardrailPlusHead** that emits a per-image reliability score.
+The score is used for (i) abstention and deferral to the teacher and
+(ii) detecting confident failures under real domain shift (ACDC fog / night
+/ rain / snow, plus IDD and BDD as cross-dataset shifts). The head adds
+under 3% latency on top of the student forward pass and never backpropagates
+into the student.
 
-1. `student_sup`  – supervised baseline (CE + Dice)
-2. `student_kd`   – soft-label KD from the frozen teacher
-3. `student_skd`  – structured KD (KD + pairwise-affinity feature match)
-4. **`guardrail`** – a small selective-prediction head on top of the frozen
-   student that is trained with dense per-pixel teacher/student disagreement
-   supervision. This is the paper's contribution.
+## Headline result
 
-The guardrail head takes the (detached) student logits and, optionally, the
-student backbone features, and outputs three things through a shared 3-conv
-dense encoder:
+Per-pixel teacher/student disagreement supervision beats every common
+confidence baseline on confident-failure AUROC under domain shift, at
+negligible inference cost. Concretely (mit-b1, MSP threshold 0.85):
 
-| output | supervision | used at eval as |
-|---|---|---|
-| `utility_score` (scalar) | scalar teacher-benefit (ablation only) | `guardrailpp_utility_scalar` |
-| `disagree_logits` (per-pixel BCE) | per-pixel teacher ≠ student mask | `guardrailpp_utility_dense_bce` |
-| `gap_pred` (per-pixel linear) | per-pixel `student_ce − teacher_ce` | `guardrailpp_utility_dense_gap` |
+| dataset            | MSP    | TempMSP | Energy | MaxLogit | MC-Drop | Ours (dense_multi) |
+|--------------------|--------|---------|--------|----------|---------|--------------------|
+| Cityscapes (in-d.) | ~0.66  | ~0.66   | ~0.65  | ~0.66    | ~0.66   | **~0.80**          |
+| ACDC               | ~0.56  | ~0.57   | ~0.59  | ~0.59    | ~0.58   | **~0.80**          |
 
-At inference time a single scalar is obtained by averaging the per-pixel
-dense outputs over valid pixels. The primary score for the paper is
-`guardrailpp_utility_dense_gap`; `guardrailpp_utility_dense_bce` is a close
-runner-up. Both beat MSP / entropy / temp-MSP / MC-dropout on
-confident-failure AUROC under domain shift by large margins, at <3% latency
-overhead on top of the student forward pass.
+Numbers come from the per-paper CSVs under `src/analysis/combined_all/`.
 
-## Paper plan (NeurIPS submission, see `/root/.claude/plans/`)
+## Why dense supervision
 
-1. **Method.** Dense pixel-level supervision of a cheap selective-prediction
-   head. No retraining of the student; the head adds <3% inference cost.
-2. **Empirical headline.** Confident-failure AUROC @ msp≥0.85 on Cityscapes-val
-   of **0.75 / 0.80 / 0.73** for mit-b0/b1/b2, beating MSP by **+0.16 / +0.22 /
-   +0.16**. On ACDC under domain shift we get **0.80** on b0 vs MSP 0.56.
-3. **Analytic (negative) result.** Image-level scalar `teacher_benefit` is
-   structurally unpredictable from student features: `corr(student_risk,
-   teacher_risk) ≈ 0.81` bounds the R² of any scalar benefit predictor below
-   0.06. The paper explains why the dense supervision sidesteps this bound.
+The image-level scalar `teacher_benefit = student_risk − teacher_risk` is
+*structurally* unpredictable from student features:
+`corr(student_risk, teacher_risk) ≈ 0.81` on Cityscapes-val and ~0.78 on
+ACDC, which bounds the R² of any scalar benefit predictor below ~0.06.
+Dense per-pixel disagreement signals sidestep this trap (~1M pixels of
+training signal per image instead of a single residual scalar) and are what
+the paper actually trains the head on.
 
-## Installing and running
+## Pipeline
+
+Four sequential stages, each a separate SLURM job. Stages 1–3 train the
+student; stage 4 trains the guardrail head on a *frozen* student and
+*frozen* teacher.
+
+```
+student_sup.ckpt → student_kd.ckpt | student_skd.ckpt → guardrail.ckpt
+   (CE + Dice)      (KL on softened    (KL + pairwise      (frozen student
+                     teacher logits)    feature affinity)    + frozen teacher)
+```
+
+Stage 4 emits three heads from a shared 3-conv encoder over (detached)
+student logits — optionally concatenated with detached student features:
+
+| head              | shape         | trained when                                       |
+|-------------------|---------------|----------------------------------------------------|
+| `disagree_logits` | `(B, H, W)`   | `dense_multi`, `dense_disagree`, `gt_disagree`     |
+| `gap_pred`        | `(B, H, W)`   | `dense_multi`, `dense_gap`, `gt_risk`              |
+| `utility_score`   | `(B,)` scalar | `scalar_benefit` only (negative-result baseline)   |
+
+Inference averages the per-pixel dense outputs over valid pixels into a
+single scalar per image. `full_eval.py` aliases that into
+`guardrailpp_utility` based on which head was actually trained for the
+checkpoint's `supervision_type`, so the alias never reads from an untrained
+output.
+
+## Supervision modes
+
+Set via `--supervision-type` on `run.py` or `SUPERVISION_TYPE=...` env var
+in SLURM:
+
+| mode             | target                                  | role                 |
+|------------------|-----------------------------------------|----------------------|
+| `dense_multi`    | both dense targets, summed              | **paper headline**   |
+| `dense_disagree` | teacher_argmax ≠ student_argmax (BCE)   | ablation             |
+| `dense_gap`      | student_ce − teacher_ce (smooth-L1)     | ablation             |
+| `gt_disagree`    | student_argmax ≠ ground_truth (BCE)     | teacher-vs-GT control |
+| `gt_risk`        | per-pixel student CE vs GT              | teacher-vs-GT control |
+| `scalar_benefit` | image-level teacher_benefit (smooth-L1) | negative-result row  |
+
+## Quickstart
+
+Install once:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Stages 1-3 (student distillation)
-
-Slurm scripts per backbone in `slurm/{b0,b1,b2}/`:
-
-```bash
-sbatch slurm/b1/train_sup.sbatch        # ~12h
-sbatch slurm/b1/train_skd.sbatch        # ~12h, uses the sup checkpoint
-```
-
-(`train_kd.sbatch` is provided for the soft-label-KD-only comparison row in
-Table 1 but is not on the critical path for the main method.)
-
-### Stage 4 — guardrail head
-
-The paper's primary run trains the head with `supervision_type=dense_multi`
-(the default):
-
-```bash
-sbatch slurm/b1/train_guardrail.sbatch  # ~12h
-```
-
-Override the supervision type via env var:
-
-```bash
-SUPERVISION_TYPE=scalar_benefit sbatch slurm/b1/train_guardrail.sbatch
-SUPERVISION_TYPE=dense_disagree sbatch slurm/b1/train_guardrail.sbatch
-SUPERVISION_TYPE=dense_gap      sbatch slurm/b1/train_guardrail.sbatch
-```
-
-### E2 — supervision-type ablation (paper Table 2)
-
-Each supervision mode is a separate, single-task 12 h job. Queue them
-individually; no array jobs. `dense_multi` is the paper's primary run and is
-the default for `train_guardrail.sbatch`.
-
-```bash
-sbatch slurm/b1/train_guardrail.sbatch                   # dense_multi (default/primary)
-sbatch slurm/b1/train_guardrail_scalar.sbatch            # scalar_benefit ablation
-sbatch slurm/b1/train_guardrail_dense_disagree.sbatch    # dense_disagree ablation
-sbatch slurm/b1/train_guardrail_dense_gap.sbatch         # dense_gap ablation
-```
-
-Outputs land in `runs/mit-b1_guard_<mode>_j<jobid>/`.
-
-### E4 — Deep Ensemble baseline (paper Table 1, ensemble row)
-
-Three independent SKD members for mit-b1 from the shared sup checkpoint.
-Each file is a single 12 h job; queue as many as parallel-GPU budget allows.
-
-```bash
-sbatch slurm/b1/train_ensemble_m1.sbatch   # seed 42
-sbatch slurm/b1/train_ensemble_m2.sbatch   # seed 137
-sbatch slurm/b1/train_ensemble_m3.sbatch   # seed 256
-```
-
-Outputs: `runs/mit-b1_ensemble_m{1,2,3}_seed<seed>_j<jobid>/student_skd.ckpt`.
-
-### Eval
-
-Paper numbers come from `src/eval/full_eval.py`, which consumes a guardrail
-checkpoint + student checkpoint and emits per-image, per-class,
-risk-coverage, teacher-budget, confident-failures and calibration CSVs under
-`src/analysis/`.
-
-```bash
-sbatch slurm/b1/eval_city.sbatch   # Cityscapes val
-sbatch slurm/b1/eval_acdc.sbatch   # ACDC fog / night / rain / snow / all
-```
-
-`full_eval.py` supports per-run seeding via `--seed` and multi-seed
-aggregation via `--seeds 42,137,256`.
-
-## Repository layout
-
-```
-src/train/
-  models.py              GuardrailPlusHead + teacher/student wrappers
-  losses.py              SegLoss, KDLoss, PairwiseAffinityLoss, GuardrailPlusLoss
-  train_guardrail.py     Stage-4 training loop (dense_multi by default)
-  train_supervised.py    Stage-1 training loop
-  train_kd.py            Stage-2 training loop
-  train_skd.py           Stage-3 training loop
-  run.py                 Top-level CLI (stages 1-4)
-  config.py              Dataclass config, lives alongside CLI flags
-  data.py, utils.py      dataloaders, schedulers, checkpoint helpers
-src/eval/
-  full_eval.py           Authoritative eval — per_image, risk_coverage,
-                         teacher_budget, confident_failures, runs.csv
-  eval.py, data.py       Helpers for the sanity-eval path in run.py
-src/analysis/            CSVs + figure-generation scripts
-slurm/{b0,b1,b2}/        SLURM job files for every stage
-tests/
-  test_guardrail_head.py Fast CPU smoke tests that MUST pass before
-                         queueing a 12h job
-```
-
-## Before queueing a training job
-
-Always run the CPU smoke test first — it validates the head architecture,
-loss modes, and target computation in <5 seconds:
+Always run the CPU smoke test before queueing a 12h training job — 68
+tests, finishes in under 5 seconds:
 
 ```bash
 python tests/test_guardrail_head.py
 ```
 
-46 tests currently; any failure means the training will waste 12 hours.
+### Train
+
+```bash
+# Stages 1–3 (student): one 12h job each, sequential.
+sbatch slurm/b1/train_sup.sbatch
+sbatch slurm/b1/train_skd.sbatch          # branches off student_sup
+sbatch slurm/b1/train_kd.sbatch           # alternative to skd; only needed for the KD-only baseline row
+
+# Stage 4 (guardrail head): primary run + ablation rows.
+sbatch slurm/b1/train_guardrail.sbatch                  # dense_multi (default)
+sbatch slurm/b1/train_guardrail_dense_disagree.sbatch
+sbatch slurm/b1/train_guardrail_dense_gap.sbatch
+sbatch slurm/b1/train_guardrail_gt_disagree.sbatch
+sbatch slurm/b1/train_guardrail_gt_risk.sbatch
+sbatch slurm/b1/train_guardrail_scalar.sbatch
+```
+
+The same five ablation files exist for `b0/` and `b2/`. Multi-seed
+guardrail retrains live under `slurm/multi/` (seeds 137 and 256 on top of
+the default seed 42). One 12h job per seed; queue independently.
+
+### Evaluate
+
+Paper numbers come from `src/eval/full_eval.py`, which consumes a student
+checkpoint + an optional guardrail checkpoint + an optional teacher and
+upserts CSVs into `src/analysis/<experiment>/csv/`:
+`runs.csv`, `per_image.csv`, `per_class.csv`, `risk_coverage.csv`,
+`teacher_budget.csv`, `confident_failures.csv`, `calibration_bins.csv`,
+`latency_samples.csv`.
+
+```bash
+sbatch slurm/b1/eval_city.sbatch          # Cityscapes val (in-domain)
+sbatch slurm/b1/eval_acdc.sbatch          # ACDC fog/night/rain/snow + pooled
+sbatch slurm/b1/eval_all_ablations.sbatch # sweep newest checkpoint per (backbone, mode)
+```
+
+For an ablation eval run, **always** pass `GUARD_DIR=` explicitly:
+
+```bash
+GUARD_DIR=runs/mit-b1_guard_dense_gap_j12346 sbatch slurm/b1/eval_acdc.sbatch
+```
+
+`full_eval.py` accepts `--seed` and `--seeds 42,137,256` for eval-only
+multi-seed aggregation; `--seeds` overrides `--seed`.
+
+### Render figures
+
+```bash
+python src/analysis/figure_scripts/run_all_figures.py
+sbatch slurm/b1/figure_silent_failure.sbatch   # qualitative grid
+```
+
+Figures land in `src/analysis/figures/`.
+
+## Repository layout
+
+```
+src/train/
+  config.py            dataclass defaults; CLI flags on run.py override
+  models.py            SegModel / HFSegModelWrapper / GuardrailPlusHead
+  losses.py            SegLoss, KDLoss, PairwiseAffinityLoss, GuardrailPlusLoss
+  data.py              Cityscapes / IDD / BDD / HF segmentation datasets
+  utils.py             seeding, mIoU, checkpoints, schedulers, evaluator
+  _wandb_helpers.py    optional W&B integration; no-op when wandb missing
+  train_supervised.py  stage 1
+  train_kd.py          stage 2
+  train_skd.py         stage 3
+  train_guardrail.py   stage 4 (dense supervision + corruption augmentation)
+  run.py               single CLI for all four stages
+
+src/eval/
+  full_eval.py         authoritative paper evaluator → CSVs + figures
+  eval.py              fast per-image driver used by run.py's sanity pass
+  data.py              local / HF / Kaggle iterators for eval.py
+  analysis.py          per-image metrics + 6-panel sanity plot
+
+src/analysis/
+  figure_scripts/      one script per paper figure; reads combined_all/
+  *.py                 standalone figure generators (predecessors of figure_scripts/)
+
+scripts/
+  make_silent_failure_figure.py  qualitative 4×7 grid; called by sbatch
+
+slurm/
+  {b0,b1,b2}/          per-backbone training and eval jobs
+  multi/               multi-seed guardrail retrains (seeds 137, 256)
+  eval.sbatch          single-checkpoint eval; eval_all.sbatch sweeps everything
+
+tests/
+  test_guardrail_head.py   68 CPU tests, MUST pass before any 12h job
+```
+
+## SLURM rules
+
+Single task per file, no arrays, 12h cap. Output naming prevents collisions
+across ablations:
+
+- Single seed: `runs/mit-b<N>_<stage>_<mode>_j<jobid>/`
+- Multi-seed:  `runs/mit-b<N>_guard_dense_multi_s<seed>_j<jobid>/`
+
+Eval jobs auto-discover the newest student/guardrail checkpoint by mtime,
+so always pass `GUARD_DIR=` and (if needed) `SKD_DIR=` when targeting a
+specific ablation.

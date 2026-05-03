@@ -1,4 +1,7 @@
-"""Confident failure detection: AUROC across MSP thresholds. Input: CSV dir (first arg)."""
+"""Detector AUROC for confident failures, swept over MSP thresholds.
+
+    python src/analysis/show_confident_failures.py <csv_dir>
+"""
 import os, sys
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -33,7 +36,7 @@ ax.set_title("Guardrail++ advantage widens at high confidence",
 ax.legend(fontsize=9, loc="upper left")
 ax.set_ylim(0.45, 0.75)
 
-# Annotate headline result at MSP >= 0.97
+# Annotate the headline Δ at the strictest threshold (MSP ≥ 0.97).
 g97 = float(cf[cf["msp_threshold"] == 0.97]["guardrail_auroc"].iloc[0])
 m97 = float(cf[cf["msp_threshold"] == 0.97]["msp_auroc"].iloc[0])
 delta = g97 - m97

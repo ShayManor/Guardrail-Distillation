@@ -1,4 +1,4 @@
-"""Metrics computation, worst-k extraction, and visualization."""
+"""Per-image metrics + a 6-panel summary figure for the sanity-eval pass."""
 
 import json
 from dataclasses import dataclass
@@ -35,7 +35,7 @@ def compute_metrics(
     image_id: str = "",
     inference_ms: float = 0.0,
 ) -> ImageMetrics:
-    """Segmentation + uncertainty metrics for a single image."""
+    """Per-image segmentation accuracy + softmax uncertainty stats."""
     probs = F.softmax(pred_logits.squeeze(0), dim=0)
     pred = probs.argmax(dim=0)
     label = label.squeeze()
@@ -87,10 +87,7 @@ def compute_metrics(
 
 
 def get_worst_k(csv_path: str, k_percent: float = 5.0, sort_by: str = "miou", ascending: bool = True):
-    """
-    Bottom k% of images by a metric. Default: lowest mIoU.
-    Set ascending=False for metrics where higher = worse (e.g. entropy_mean).
-    """
+    """Bottom k% of images by `sort_by`. Pass `ascending=False` for higher-is-worse metrics."""
     import pandas as pd
 
     df = pd.read_csv(csv_path)
@@ -105,10 +102,8 @@ def get_worst_k(csv_path: str, k_percent: float = 5.0, sort_by: str = "miou", as
 
 
 def plot_results(csv_path: Union[str, List[str]], save_dir: Optional[str] = None, show: bool = False):
-    """
-    6-panel analysis from eval CSVs: mIoU dist, confidence vs mIoU, per-class IoU,
-    entropy vs mIoU, risk-coverage (AURC), latency. Writes summary.csv.
-    """
+    """Render the 6-panel sanity figure (mIoU dist / MSP-vs-mIoU / per-class IoU /
+    entropy-vs-mIoU / risk-coverage / latency) and write summary.csv."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt

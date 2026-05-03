@@ -1,4 +1,4 @@
-"""Stage 2: Train student with KD (supervised + KL distillation)."""
+"""Stage 2: KD = supervised CE + KL on softened logits."""
 
 import time
 
@@ -10,7 +10,7 @@ from _wandb_helpers import wandb_log, log_system_metrics
 
 
 def train_kd(student, teacher, train_loader, val_loader, cfg, global_step=0):
-    """Train student_kd with teacher frozen. Returns (path, global_step)."""
+    """Returns (best_checkpoint_path, global_step). Teacher stays frozen."""
     print("\n" + "=" * 60)
     print("STAGE 2: Knowledge Distillation Training")
     print("=" * 60)
@@ -19,14 +19,11 @@ def train_kd(student, teacher, train_loader, val_loader, cfg, global_step=0):
     student = student.to(device).train()
     teacher = teacher.to(device).eval()
 
-    # Freeze teacher
     for p in teacher.parameters():
         p.requires_grad = False
 
     seg_loss = SegLoss(alpha_ce=cfg.alpha_ce, alpha_dice=cfg.alpha_dice)
     kd_loss = KDLoss(temperature=cfg.kd_temperature)
-    backbone_params = [p for n, p in student.named_parameters() if "decode_head" not in n and p.requires_grad]
-    head_params = [p for n, p in student.named_parameters() if "decode_head" in n and p.requires_grad]
     optimizer = torch.optim.AdamW(student.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     total_steps = cfg.epochs_kd * len(train_loader)
     scheduler = build_scheduler(optimizer, cfg, total_steps)

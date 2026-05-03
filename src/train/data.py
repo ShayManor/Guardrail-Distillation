@@ -1,4 +1,8 @@
-"""Dataset loading for segmentation tasks."""
+"""Segmentation dataset loaders.
+
+Cityscapes is the train+val source; IDD and BDD are eval-only loaders used
+by full_eval.py for cross-dataset shift figures.
+"""
 
 import os
 from pathlib import Path
@@ -12,7 +16,7 @@ import numpy as np
 import cv2
 
 
-# ── Cityscapes label mapping (34 → 19 train IDs) ──
+# Cityscapes 34 raw labelIds → 19 trainIds; everything else is the ignore index.
 CITYSCAPES_LABEL_MAP = {
     -1: 255, 0: 255, 1: 255, 2: 255, 3: 255, 4: 255, 5: 255, 6: 255,
     7: 0, 8: 1, 9: 255, 10: 255, 11: 2, 12: 3, 13: 4, 14: 255,
@@ -57,7 +61,6 @@ class CityscapesDataset(Dataset):
         img = Image.fromarray(img)
         lbl = Image.fromarray(cv2.imread(str(self.labels[idx]), cv2.IMREAD_UNCHANGED))
 
-        # Joint random crop + flip for training
         if self.split == "train":
             i, j, h, w = T.RandomCrop.get_params(img, (self.crop_size, self.crop_size))
             img = TF.crop(img, i, j, h, w)
@@ -66,8 +69,8 @@ class CityscapesDataset(Dataset):
                 img = TF.hflip(img)
                 lbl = TF.hflip(lbl)
         else:
-            # Resize for val
-            val_size = (self.crop_size, self.crop_size * 2)  # preserve 1:2 aspect ratio
+            # Cityscapes is 1:2 aspect ratio at native res; preserve it for val.
+            val_size = (self.crop_size, self.crop_size * 2)
             img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
             lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
 
@@ -79,16 +82,13 @@ class CityscapesDataset(Dataset):
 
 
 class IDDDataset(Dataset):
-    """India Driving Dataset (IDD Segmentation) loader.
+    """India Driving Dataset (eval-only).
 
-    Expects the tree produced by slurm/data/prep_idd_local.sbatch:
+    Expects the AutoNUE-toolkit layout:
         <root>/leftImg8bit/{train,val}/<drive_id>/*_leftImg8bit.png
         <root>/gtFine/{train,val}/<drive_id>/*_gtFine_labelcsTrainIds.png
 
-    The ``*_csTrainIds.png`` labels come from the AutoNUE toolkit and are
-    already mapped to the Cityscapes 19-class trainId ontology (values in
-    {0..18, 255}), so this class applies an **identity** label map — unlike
-    ``CityscapesDataset`` which applies the 34→19 remap at load time.
+    Labels are already in Cityscapes 19-class trainId space, so no remap.
     """
 
     def __init__(self, root, split="val", crop_size=512):
@@ -110,10 +110,7 @@ class IDDDataset(Dataset):
             self.labels.append(lbl)
 
         missing = [p for p in self.labels if not p.exists()]
-        assert not missing, (
-            f"IDDDataset: {len(missing)} labels missing (e.g. {missing[:3]}). "
-            "Did the AutoNUE toolkit remap finish?"
-        )
+        assert not missing, f"IDDDataset: {len(missing)} labels missing (e.g. {missing[:3]})"
         assert len(self.images) == len(self.labels) and self.images, (
             f"IDDDataset: no images under {img_dir}"
         )
@@ -130,8 +127,6 @@ class IDDDataset(Dataset):
         img = Image.fromarray(img)
         lbl = Image.fromarray(cv2.imread(str(self.labels[idx]), cv2.IMREAD_UNCHANGED))
 
-        # IDD is eval-only for us — use the same val resize as CityscapesDataset
-        # so the student input distribution matches what it saw during training.
         val_size = (self.crop_size, self.crop_size * 2)
         img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
         lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
@@ -139,19 +134,15 @@ class IDDDataset(Dataset):
         img = TF.to_tensor(img)
         img = self.normalize(img)
         lbl = torch.from_numpy(np.array(lbl)).long()
-        # Identity label map: values are already cs19 trainIds in {0..18, 255}.
         return img, lbl
 
 
 class BDDDataset(Dataset):
-    """BDD100K Segmentation loader (Kaggle solesensei mirror).
+    """BDD100K segmentation (eval-only). Labels are already cs19 trainIds.
 
-    Expects the tree produced by slurm/data/prep_bdd.sbatch:
+    Layout (Kaggle solesensei mirror):
         <root>/seg/images/{train,val}/*.jpg
         <root>/seg/labels/{train,val}/*_train_id.png
-
-    Labels ship as Cityscapes 19-class trainIds (values in {0..18, 255}),
-    so this class applies an identity label map — same pattern as IDDDataset.
     """
 
     def __init__(self, root, split="val", crop_size=512):
@@ -166,10 +157,7 @@ class BDDDataset(Dataset):
         self.labels = [lbl_dir / f"{p.stem}_train_id.png" for p in self.images]
 
         missing = [p for p in self.labels if not p.exists()]
-        assert not missing, (
-            f"BDDDataset: {len(missing)} labels missing (e.g. {missing[:3]}). "
-            "Did prep_bdd.sbatch finish?"
-        )
+        assert not missing, f"BDDDataset: {len(missing)} labels missing (e.g. {missing[:3]})"
         assert len(self.images) == len(self.labels) and self.images, (
             f"BDDDataset: no images under {img_dir}"
         )
@@ -197,7 +185,7 @@ class BDDDataset(Dataset):
 
 
 class HFSegmentationDataset(Dataset):
-    """Load a segmentation dataset from HuggingFace."""
+    """Wrap a HuggingFace segmentation dataset with the same transforms."""
 
     def __init__(self, dataset, crop_size=512, split="train",
                  image_key="image", label_key="semantic_segmentation"):
@@ -218,7 +206,7 @@ class HFSegmentationDataset(Dataset):
         img = sample[self.image_key].convert("RGB")
         lbl = sample[self.label_key]
 
-        val_size = (self.crop_size, self.crop_size * 2)  # preserve 1:2 aspect ratio
+        val_size = (self.crop_size, self.crop_size * 2)
         img = TF.resize(img, val_size, interpolation=TF.InterpolationMode.BILINEAR)
         lbl = TF.resize(lbl, val_size, interpolation=TF.InterpolationMode.NEAREST)
 
@@ -233,13 +221,7 @@ class HFSegmentationDataset(Dataset):
 
 
 def build_dataloaders(cfg):
-    """Build train/val dataloaders from config.
-
-    Uses ``cfg.seed`` to pin:
-      - the train shuffle permutation (via a torch.Generator)
-      - each worker's python/numpy/torch RNG state (via seed_worker)
-    The val loader is unshuffled and does not need a generator.
-    """
+    """Train + val dataloaders. cfg.seed pins shuffle order and worker RNGs."""
     from src.train.utils import seed_worker
 
     path = cfg.dataset_path

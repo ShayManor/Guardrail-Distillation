@@ -1,14 +1,9 @@
-"""Stage 4: train the Guardrail++ head on a frozen student + teacher.
+"""Stage 4: train the GuardrailPlusHead on a frozen student + teacher.
 
-The paper's primary supervision signal is the per-pixel teacher / student
-disagreement map (BCE) together with the per-pixel signed risk-gap map
-(smooth-L1). The scalar image-level benefit regression is kept only so we
-can ablate against it.
-
-All heavy legacy plumbing (counterfactual-margin curricula, composite-risk
-blending, ROI / dynamic-class weighted utilities, isotonic post-hoc
-calibration, adaptive-preprocessing, binary / gap_map modes) has been
-removed to keep the training loop honest and the paper narrative clean.
+Primary supervision is per-pixel teacher/student disagreement (BCE) plus a
+per-pixel signed risk-gap regression (smooth-L1). The scalar image-level
+benefit head is wired in only as the negative-result baseline; the GT-target
+modes (gt_disagree, gt_risk) drop the teacher and use ground-truth labels.
 """
 
 import random
@@ -24,30 +19,21 @@ from _wandb_helpers import wandb_log, log_system_metrics
 
 IGNORE_INDEX = 255
 
-# Corruption families used for online training-time augmentation. These are
-# ImageNet-C / Cityscapes-C aligned and stand in for generic domain shift
-# during guardrail training (clean Cityscapes does not contain enough
-# student-teacher disagreement to fit a selective-prediction head on its own).
+# Online corruption families (loosely ImageNet-C aligned). Clean Cityscapes
+# alone has too little student/teacher disagreement to fit a selective-
+# prediction head, so we synthesise OOD-ish inputs at train time.
 CORRUPTION_FAMILIES = ("underexposure", "motion_blur", "noise", "fog")
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Corruption augmentation
-# ──────────────────────────────────────────────────────────────────────────
-
 def _apply_corruption(imgs, family, severity):
-    """Apply a single corruption family to a mini-batch in-place (returns new tensor).
-
-    ``severity`` is in [0, 1]. family ∈ CORRUPTION_FAMILIES.
-    """
+    """Apply one corruption family to a batch. severity in [0, 1]."""
     severity = float(max(0.0, min(1.0, severity)))
     if severity == 0.0:
         return imgs
     x = imgs
 
     if family == "underexposure":
-        factor = 1.0 - 0.95 * severity
-        return x * factor
+        return x * (1.0 - 0.95 * severity)
 
     if family == "motion_blur":
         k = 3 + int(round(12 * severity))
@@ -56,37 +42,28 @@ def _apply_corruption(imgs, family, severity):
         kernel = torch.zeros(1, 1, 1, k, device=x.device)
         kernel[..., :] = 1.0 / k
         B, C, H, W = x.shape
-        x_pad = F.pad(
-            x.reshape(B * C, 1, H, W), (k // 2, k // 2, 0, 0), mode="reflect"
-        )
-        blurred = F.conv2d(x_pad, kernel).reshape(B, C, H, W)
-        return blurred
+        x_pad = F.pad(x.reshape(B * C, 1, H, W), (k // 2, k // 2, 0, 0), mode="reflect")
+        return F.conv2d(x_pad, kernel).reshape(B, C, H, W)
 
     if family == "noise":
         sigma = 0.02 + 0.28 * severity
         gaussian = torch.randn_like(x) * sigma
-        shot_scale = 0.5 * severity
-        shot = torch.randn_like(x) * (x.abs().sqrt() * shot_scale)
+        shot = torch.randn_like(x) * (x.abs().sqrt() * 0.5 * severity)
         return x + gaussian + shot
 
     if family == "fog":
         B, C, H, W = x.shape
-        fog_density = 0.1 + 0.7 * severity
+        density = 0.1 + 0.7 * severity
         depth = (
             torch.linspace(1.0, 0.2, H, device=x.device)
             .view(1, 1, H, 1)
             .expand(B, 1, H, W)
         )
-        transmission = torch.exp(-fog_density * depth * 3.0)
-        airlight = 0.8
-        return x * transmission + airlight * (1.0 - transmission)
+        transmission = torch.exp(-density * depth * 3.0)
+        return x * transmission + 0.8 * (1.0 - transmission)
 
     return x
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# Target builders
-# ──────────────────────────────────────────────────────────────────────────
 
 def _valid_mean(v, valid_mask):
     denom = valid_mask.float().sum(dim=(1, 2)).clamp(min=1.0)
@@ -94,23 +71,16 @@ def _valid_mean(v, valid_mask):
 
 
 def _teacher_benefit_scalar(student_logits, teacher_logits, labels):
-    """Image-level clamped teacher benefit, used only by ``scalar_benefit`` mode."""
     ignore = labels == IGNORE_INDEX
     safe = labels.clone()
     safe[ignore] = 0
     student_ce = F.cross_entropy(student_logits, safe, reduction="none")
     teacher_ce = F.cross_entropy(teacher_logits, safe, reduction="none")
     valid = ~ignore
-    student_risk = _valid_mean(student_ce, valid)
-    teacher_risk = _valid_mean(teacher_ce, valid)
-    return (student_risk - teacher_risk).clamp(min=0.0)
+    return (_valid_mean(student_ce, valid) - _valid_mean(teacher_ce, valid)).clamp(min=0.0)
 
 
 def _teacher_disagreement_map(student_logits, teacher_logits, labels):
-    """Per-pixel 0/1 mask: 1 where teacher and student argmax differ.
-
-    Returns (disagree: float B×H×W, valid_mask: float B×H×W).
-    """
     student_pred = student_logits.argmax(dim=1)
     teacher_pred = teacher_logits.argmax(dim=1)
     disagree = (student_pred != teacher_pred).float()
@@ -119,43 +89,25 @@ def _teacher_disagreement_map(student_logits, teacher_logits, labels):
 
 
 def _teacher_risk_gap_map(student_logits, teacher_logits, labels):
-    """Per-pixel signed risk gap = student_ce − teacher_ce (no clamp)."""
+    """Signed gap = student_ce − teacher_ce, no clamping."""
     ignore = labels == IGNORE_INDEX
     safe = labels.clone()
     safe[ignore] = 0
     student_ce = F.cross_entropy(student_logits, safe, reduction="none")
     teacher_ce = F.cross_entropy(teacher_logits, safe, reduction="none")
-    gap = student_ce - teacher_ce
-    valid = (~ignore).float()
-    return gap, valid
+    return student_ce - teacher_ce, (~ignore).float()
 
 
 def _gt_disagreement_map(student_logits, labels):
-    """Per-pixel 0/1 mask: 1 where student argmax differs from ground truth.
-
-    Same architecture target as ``_teacher_disagreement_map`` but uses GT
-    labels instead of teacher predictions. This is the label-supervised
-    baseline: if the teacher-disagreement head beats this under OOD shift,
-    the teacher signal generalizes better than source-domain GT labels.
-
-    Returns (disagree: float B×H×W, valid_mask: float B×H×W).
-    """
+    """student_argmax ≠ ground_truth — teacher-free counterpart of the BCE target."""
     student_pred = student_logits.argmax(dim=1)
-    disagree = (student_pred != labels).float()
     valid = (labels != IGNORE_INDEX).float()
-    disagree = disagree * valid  # zero out ignore pixels
+    disagree = (student_pred != labels).float() * valid
     return disagree, valid
 
 
 def _gt_risk_map(student_logits, labels):
-    """Per-pixel student cross-entropy against ground truth.
-
-    Label-supervised counterpart of ``_teacher_risk_gap_map``. Instead of
-    ``student_ce − teacher_ce``, this is just ``student_ce``: the head
-    learns to predict per-pixel student failure magnitude from GT labels.
-
-    Returns (risk: float B×H×W, valid_mask: float B×H×W).
-    """
+    """Per-pixel student CE against GT — teacher-free counterpart of the gap target."""
     ignore = labels == IGNORE_INDEX
     safe = labels.clone()
     safe[ignore] = 0
@@ -165,17 +117,14 @@ def _gt_risk_map(student_logits, labels):
 
 
 def _build_targets(student_logits, teacher_logits, labels, supervision_type="dense_multi"):
-    """Build every target the GuardrailPlusLoss might need.
+    """Build every target the loss might consume.
 
-    For teacher-based modes (dense_multi, dense_disagree, dense_gap,
-    scalar_benefit), targets come from teacher-student comparison.
-    For GT-based modes (gt_disagree, gt_risk), targets come from
-    ground-truth labels — no teacher signal used.
+    GT modes ignore the teacher; teacher modes use both. utility_target is a
+    placeholder zero for GT modes since the scalar head is dead under those.
     """
     valid = (labels != IGNORE_INDEX).float()
 
     if supervision_type in ("gt_disagree", "gt_risk"):
-        # GT-supervised baselines: same architecture, label-supervised
         gt_disagree_target, _ = _gt_disagreement_map(student_logits, labels)
         gt_risk_target, _ = _gt_risk_map(student_logits, labels)
         return {
@@ -206,10 +155,6 @@ def _build_targets(student_logits, teacher_logits, labels, supervision_type="den
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Training loop
-# ──────────────────────────────────────────────────────────────────────────
-
 def train_guardrail(
     guardrail,
     student,
@@ -220,10 +165,7 @@ def train_guardrail(
     use_student_features=True,
     global_step=0,
 ):
-    """Train the guardrail head. Student and teacher remain frozen.
-
-    Returns ``(best_checkpoint_path, global_step)``.
-    """
+    """Returns (best_checkpoint_path, global_step). Student + teacher stay frozen."""
     print("\n" + "=" * 60)
     print(f"STAGE 4: Guardrail training  supervision_type={cfg.supervision_type}")
     print("=" * 60)
@@ -264,15 +206,12 @@ def train_guardrail(
         for step, (imgs, lbls) in enumerate(train_loader):
             imgs, lbls = imgs.to(device), lbls.to(device)
 
-            # Online per-image corruption augmentation.
             if corruption_prob > 0:
                 for i in range(imgs.shape[0]):
                     if random.random() < corruption_prob:
                         fam = random.choice(CORRUPTION_FAMILIES)
-                        sev = 0.2 + 0.6 * random.random()  # uniform [0.2, 0.8]
-                        imgs[i] = _apply_corruption(
-                            imgs[i : i + 1], fam, sev
-                        ).squeeze(0)
+                        sev = 0.2 + 0.6 * random.random()
+                        imgs[i] = _apply_corruption(imgs[i : i + 1], fam, sev).squeeze(0)
 
             with autocast("cuda", enabled=cfg.fp16):
                 with torch.no_grad():
@@ -285,8 +224,10 @@ def train_guardrail(
                         student_feat = None
                     teacher_logits = teacher(imgs)
 
-                targets = _build_targets(student_logits, teacher_logits, lbls,
-                                        supervision_type=cfg.supervision_type)
+                targets = _build_targets(
+                    student_logits, teacher_logits, lbls,
+                    supervision_type=cfg.supervision_type,
+                )
                 preds = guardrail(student_logits, student_feat)
                 loss, loss_info = criterion(preds, targets)
 
@@ -331,28 +272,20 @@ def train_guardrail(
                     cfg.log_every * cfg.batch_size / max(elapsed, 1e-6)
                 )
 
-                # Target and prediction diagnostics for the dense heads.
                 dt = targets["disagree_target"]
                 dv = targets["disagree_valid"]
                 denom = dv.sum().clamp(min=1.0)
-                wb["guardrail/disagree_target_rate"] = float(
-                    (dt * dv).sum().item() / denom.item()
-                )
+                wb["guardrail/disagree_target_rate"] = float((dt * dv).sum().item() / denom.item())
                 wb["guardrail/disagree_pred_mean"] = float(
                     torch.sigmoid(preds["disagree_logits"]).mean().item()
                 )
                 wb["guardrail/gap_target_mean"] = float(
-                    (targets["gap_target"] * targets["gap_valid"]).sum().item()
-                    / denom.item()
+                    (targets["gap_target"] * targets["gap_valid"]).sum().item() / denom.item()
                 )
                 wb["guardrail/gap_pred_mean"] = float(preds["gap_pred"].mean().item())
                 wb["guardrail/gap_pred_std"] = float(preds["gap_pred"].std().item())
-                wb["guardrail/utility_target_mean"] = float(
-                    targets["utility_target"].mean().item()
-                )
-                wb["guardrail/utility_pred_mean"] = float(
-                    preds["utility_score"].mean().item()
-                )
+                wb["guardrail/utility_target_mean"] = float(targets["utility_target"].mean().item())
+                wb["guardrail/utility_pred_mean"] = float(preds["utility_score"].mean().item())
 
                 wandb_log(wb, step=global_step)
                 log_system_metrics(global_step)
@@ -416,8 +349,10 @@ def _eval_guardrail(guardrail, student, teacher, val_loader, cfg, use_student_fe
             student_feat = None
         teacher_logits = teacher(imgs)
 
-        targets = _build_targets(student_logits, teacher_logits, lbls,
-                                supervision_type=cfg.supervision_type)
+        targets = _build_targets(
+            student_logits, teacher_logits, lbls,
+            supervision_type=cfg.supervision_type,
+        )
         preds = guardrail(student_logits, student_feat)
         loss, _ = criterion(preds, targets)
         total_loss += loss.item() * imgs.shape[0]

@@ -1,11 +1,4 @@
-"""Pareto plot: CF-AUROC @ MSP>=0.85 vs inference latency (mit-b1).
-
-Per-dataset scatter of every failure-detection method on a single cost/quality
-plane. MSP and MaxLogit are zero-extra-compute references; MC-Dropout and
-Teacher deferral are the "spend more compute to detect failures" options.
-Guardrail (ours) should sit on the Pareto frontier — higher AUROC than the
-zero-cost scores, cheaper than the expensive ones.
-"""
+"""Per-dataset Pareto: confident-failure AUROC (MSP>=0.85) vs inference latency (b1)."""
 
 from __future__ import annotations
 
@@ -15,12 +8,11 @@ import matplotlib.pyplot as plt
 
 from _lib import apply_style, load_table, savefig, pool_acdc_domain, DATASET_LABELS
 
-# Datasets to show (canonical order).
 DATASETS = ("city", "acdc", "idd", "bdd")
 BACKBONE = "b1"
 MSP_THRESHOLD = 0.85
 
-# (display name, AUROC column in confident_failures.csv, supervision row to pull from, marker color, marker shape).
+# (display, auroc column, supervision row, color, marker)
 METHODS = [
     ("MSP",         "msp_auroc",        "dense_multi",  "#4C72B0", "o"),
     ("MaxLogit",    "max_logit_auroc",  "dense_multi",  "#64B5CD", "s"),
@@ -41,7 +33,8 @@ def cost_for_method(name: str, s: float, g_teach: float, g_gt: float, mc: float,
     if name == "MSP":
         return s
     if name == "MaxLogit":
-        return s  # same forward, just reads logits differently
+        # Same student forward; only the reduction differs from MSP.
+        return s
     if name == "MC-Dropout":
         return mc if np.isfinite(mc) else np.nan
     if name == "GT-head":
@@ -62,7 +55,7 @@ def cf_auroc(cf: pd.DataFrame, dataset: str, supervision: str, col: str) -> floa
 
 
 def pareto_front(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
-    """Lower x is better, higher y is better. Returns indices on the frontier, sorted by x."""
+    """Indices on the lower-x / higher-y frontier, sorted by x."""
     order = np.argsort(xs)
     frontier = []
     best_y = -np.inf
@@ -84,7 +77,6 @@ def main() -> None:
     pi = pool_acdc_domain(pi)
     cf = pool_acdc_domain(cf)
 
-    # Latency (median over all b1/dense_multi rows, pooled per dataset).
     lat_teach = pi[pi["supervision_type"] == "dense_multi"]
     lat_gt    = pi[pi["supervision_type"] == "gt_disagree"]
 
@@ -108,15 +100,13 @@ def main() -> None:
             xs.append(cost); ys.append(auroc)
             labels.append(name); colors.append(color); markers.append(marker)
 
-        # Teacher deferral oracle point: if you pay teacher latency, auroc is effectively 1.0
-        # (you just use the teacher's prediction). Shown for reference only — dashed outline.
+        # Reference point: pay full teacher latency, get teacher accuracy.
         if np.isfinite(s) and np.isfinite(t):
             xs.append(s + t); ys.append(1.0)
             labels.append("Teacher deferral"); colors.append("#937860"); markers.append("P")
 
         xs = np.array(xs); ys = np.array(ys)
 
-        # Pareto frontier through the points.
         front = pareto_front(xs, ys)
         ax.plot(xs[front], ys[front], color="#aaa", lw=1.0, ls="--", alpha=0.7, zorder=1)
 

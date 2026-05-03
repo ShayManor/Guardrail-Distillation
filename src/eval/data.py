@@ -1,4 +1,4 @@
-"""Dataset loading — local directories and HuggingFace streaming."""
+"""Dataset iterators for the per-image eval driver: local, HuggingFace, Kaggle."""
 import os
 from pathlib import Path
 from typing import Iterator, Optional
@@ -73,8 +73,6 @@ def load_hf_stream(
             break
         img = sample[image_key]
         lbl = sample[label_key]
-        arr = np.array(lbl)
-        print(f"[DEBUG] lbl type={type(lbl)} arr.shape={arr.shape} arr.ndim={arr.ndim}")
         if not isinstance(img, Image.Image):
             img = Image.fromarray(np.array(img))
         if not isinstance(lbl, Image.Image):
@@ -110,6 +108,7 @@ def load_local_dataset(
             break
 
         rel = img_path.relative_to(img_dir)
+        # Try a same-name match first, then the Cityscapes leftImg8bit→gtFine_labelIds rewrite.
         lbl_path = None
         for lbl_ext in exts:
             candidate = lbl_dir / rel.with_suffix(lbl_ext)
@@ -128,15 +127,6 @@ def load_local_dataset(
 
         yield img_path.stem, Image.open(img_path).convert("RGB"), Image.open(lbl_path)
 
-def _find_deepest_images_dir(base: Path) -> Path:
-    """Walk down to find the deepest directory containing image files."""
-    image_exts = {".jpg", ".jpeg", ".png"}
-    best = base
-    for dirpath, _, filenames in os.walk(base):
-        if any(Path(f).suffix.lower() in image_exts for f in filenames):
-            best = Path(dirpath)
-    return best
-
 
 def _parse_kaggle_path(path: str) -> tuple[str, Optional[str]]:
     """'kaggle://owner/dataset[/split]' -> (owner/dataset, split|None)"""
@@ -154,12 +144,10 @@ def load_kaggle_dataset(
     cache_dir: Optional[str] = None,
     max_samples: Optional[int] = None,
 ) -> Iterator[tuple[str, Image.Image, Image.Image]]:
-    """
-    Download a Kaggle dataset (cached) and iterate over image/label pairs.
-    Requires kaggle credentials (~/.kaggle/kaggle.json or env vars).
+    """Download (or reuse cache for) a Kaggle dataset, then iterate image/label pairs.
 
-    Path format: kaggle://owner/dataset-name[/split]
-    Downloads once to cache_dir (default: ~/.cache/kaggle_datasets/).
+    Needs kaggle credentials. Falls back to the competition API if the dataset
+    API rejects the slug.
     """
     import subprocess
     import zipfile
@@ -180,14 +168,12 @@ def load_kaggle_dataset(
             capture_output=True, text=True,
         )
         if result.returncode != 0:
-            # Try as competition dataset
             result = subprocess.run(
                 [kaggle_bin, "competitions", "download", "-c", dataset_id.split("/")[-1], "-p", str(dest)],
                 capture_output=True, text=True,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Kaggle download failed: {result.stderr}")
-            # Unzip any remaining zips
             for zf in dest.glob("*.zip"):
                 with zipfile.ZipFile(zf, "r") as z:
                     z.extractall(dest)
@@ -197,11 +183,5 @@ def load_kaggle_dataset(
     else:
         print(f"[kaggle] Using cached {dest}")
 
-    # If split specified, look for subdir
     root = dest / split if split and (dest / split).exists() else dest
-
-    # Auto-detect format: separate dirs vs side-by-side paired
-    has_img_dir = (root / images_subdir).exists() or (root / "leftImg8bit").exists()
-    has_gtfine = (root / labels_subdir).exists() or (root / "gtFine").exists()
-
     yield from load_local_dataset(str(root), images_subdir, labels_subdir, max_samples)

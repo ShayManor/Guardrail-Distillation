@@ -1,4 +1,4 @@
-"""Stage 3: Train student with structured KD (sup + KL + pairwise affinity)."""
+"""Stage 3: structured KD = supervised + KL + pairwise feature affinity."""
 
 import time
 
@@ -10,7 +10,7 @@ from _wandb_helpers import wandb_log, log_system_metrics
 
 
 def train_skd(student, teacher, train_loader, val_loader, cfg, global_step=0):
-    """Train student_skd. Returns (path, global_step)."""
+    """Returns (best_checkpoint_path, global_step). Teacher stays frozen."""
     print("\n" + "=" * 60)
     print("STAGE 3: Structured Knowledge Distillation Training")
     print("=" * 60)
@@ -25,8 +25,6 @@ def train_skd(student, teacher, train_loader, val_loader, cfg, global_step=0):
     seg_loss = SegLoss(alpha_ce=cfg.alpha_ce, alpha_dice=cfg.alpha_dice)
     kd_loss = KDLoss(temperature=cfg.kd_temperature)
     struct_loss = PairwiseAffinityLoss()
-    backbone_params = [p for n, p in student.named_parameters() if "decode_head" not in n and p.requires_grad]
-    head_params = [p for n, p in student.named_parameters() if "decode_head" in n and p.requires_grad]
     optimizer = torch.optim.AdamW(student.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     total_steps = cfg.epochs_skd * len(train_loader)
     scheduler = build_scheduler(optimizer, cfg, total_steps)

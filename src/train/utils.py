@@ -1,4 +1,4 @@
-"""Shared utilities: metrics, checkpointing, schedulers."""
+"""Shared training utilities: seeding, metrics, checkpoints, schedulers."""
 
 import os
 import random
@@ -12,20 +12,10 @@ IGNORE_INDEX = 255
 
 
 def set_seed(seed: int) -> None:
-    """Seed python, numpy and torch (cpu + cuda) RNGs.
+    """Seed python, numpy, and torch (cpu + cuda) RNGs.
 
-    Call once at the top of a training pipeline before any model init,
-    dataloader construction, or augmentation sampling. This covers:
-      - random.random / random.choice  (corruption family + severity sampling
-        in train_guardrail.py)
-      - np.random.*                    (segmentation dataset augmentation)
-      - torch.manual_seed              (weight init, dropout, DataLoader
-        shuffle generator default state)
-      - torch.cuda.manual_seed_all     (GPU kernels that honor manual seed)
-
-    Does NOT set ``torch.use_deterministic_algorithms(True)`` — that would
-    require CUBLAS env tweaks and break some kernels. Bitwise reproducibility
-    is not the goal; seed-controlled variance for multi-seed bars is.
+    Goal is seed-controlled variance for multi-seed bars, not bitwise
+    determinism — so we don't touch torch.use_deterministic_algorithms().
     """
     seed = int(seed)
     random.seed(seed)
@@ -36,22 +26,13 @@ def set_seed(seed: int) -> None:
 
 
 def seed_worker(worker_id: int) -> None:
-    """``DataLoader`` worker_init_fn that reseeds each worker deterministically.
-
-    PyTorch already forks each worker with ``base_seed = initial_seed + wid``
-    for torch, but python ``random`` and ``numpy`` are not re-seeded, so
-    augmentation draws that use them would be identical across workers and
-    nondeterministic across runs. This pins both.
-    """
+    """DataLoader worker_init_fn. Pins random/numpy in each worker (torch handles itself)."""
     base = torch.initial_seed() % (2**32)
     np.random.seed(base)
     random.seed(base)
 
 
-# ── Metrics ──
-
 def compute_miou(pred, target, num_classes, ignore_index=IGNORE_INDEX):
-    """Compute mean IoU."""
     pred = pred.flatten()
     target = target.flatten()
     mask = target != ignore_index
@@ -70,7 +51,7 @@ def compute_miou(pred, target, num_classes, ignore_index=IGNORE_INDEX):
 
 
 class MetricTracker:
-    """Running average tracker."""
+    """Running average across keys."""
 
     def __init__(self):
         self.reset()
@@ -93,8 +74,6 @@ class MetricTracker:
         return {k: self.avg(k) for k in self.vals}
 
 
-# ── Checkpointing ──
-
 def save_checkpoint(model, optimizer, epoch, miou, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save({
@@ -115,39 +94,30 @@ def load_checkpoint(model, path, optimizer=None, device="cuda"):
     return ckpt
 
 
-# ── Scheduler ──
-
 def build_scheduler(optimizer, cfg, total_steps):
     if cfg.lr_scheduler == "cosine":
         return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
-    elif cfg.lr_scheduler == "step":
+    if cfg.lr_scheduler == "step":
         return torch.optim.lr_scheduler.StepLR(optimizer, step_size=total_steps // 3, gamma=0.1)
-    elif cfg.lr_scheduler == "poly":
+    if cfg.lr_scheduler == "poly":
         return torch.optim.lr_scheduler.LambdaLR(
             optimizer, lambda step: (1 - step / total_steps) ** 0.9
         )
-    else:
-        raise ValueError(f"Unknown scheduler: {cfg.lr_scheduler}")
+    raise ValueError(f"Unknown scheduler: {cfg.lr_scheduler}")
 
-
-# ── Evaluation ──
 
 @torch.no_grad()
 def evaluate(model, val_loader, num_classes, device="cuda"):
-    """Run evaluation, return mIoU."""
     model.eval()
     all_ious = []
     for imgs, lbls in val_loader:
         imgs, lbls = imgs.to(device), lbls.to(device)
-        logits = model(imgs)
-        preds = logits.argmax(dim=1)
+        preds = model(imgs).argmax(dim=1)
         for i in range(preds.shape[0]):
             all_ious.append(compute_miou(preds[i], lbls[i], num_classes))
     model.train()
     return np.mean(all_ious) if all_ious else 0.0
 
-
-# ── Timer ──
 
 @contextmanager
 def timer(label=""):

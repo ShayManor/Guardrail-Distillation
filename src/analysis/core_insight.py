@@ -1,16 +1,13 @@
-"""
-Figure: Student confidence is decorrelated from teacher benefit.
+"""Two-panel scatter: MSP and Guardrail++ output vs teacher benefit.
 
-Left panel:  MSP vs teacher benefit (near-zero correlation)
-Right panel: Guardrail++ vs teacher benefit (learned signal)
+The left panel demonstrates the negative result; the right panel shows the
+learned dense signal landing somewhere useful.
 
-Usage:
-    python src/analysis/core_insight_figure.py paper_eval_v3/csv
+    python src/analysis/core_insight.py <csv_dir>
 """
 
 import os, sys
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
 
@@ -23,7 +20,6 @@ r_guard, _ = spearmanr(pi["guardrail_risk"], pi["teacher_benefit"])
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.4, 5.0), dpi=200)
 
-# ── Panel A: MSP vs teacher benefit ──
 sc1 = ax1.scatter(
     pi["student_msp"], pi["teacher_benefit"],
     c=pi["student_risk"], cmap="RdYlGn_r", s=14, alpha=0.55, edgecolors="none",
@@ -38,7 +34,6 @@ ax1.text(
 )
 plt.colorbar(sc1, ax=ax1, label="Student risk", shrink=0.82, pad=0.02)
 
-# ── Panel B: Guardrail vs teacher benefit ──
 sc2 = ax2.scatter(
     pi["guardrail_risk"], pi["teacher_benefit"],
     c=pi["student_risk"], cmap="RdYlGn_r", s=14, alpha=0.55, edgecolors="none",
