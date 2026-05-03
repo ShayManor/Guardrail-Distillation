@@ -15,6 +15,9 @@ tags:
 
 Checkpoint documentation for the submitted paper on teacher-guided failure detection for distilled semantic segmentation.
 
+## Downloading checkpoints
+The `checkpoints.zip` file can be anonymously downloaded from https://drive.google.com/file/d/1feZIyTZV63d_j-v6LuaG7ivjgNKFe8bg/view?usp=sharing
+
 ## Model
 
 A SegFormer student predicts semantic segmentation logits. A lightweight guardrail head consumes frozen student logits, optionally with detached student features, and predicts dense reliability maps. These maps are averaged into an image-level failure score.
@@ -23,7 +26,7 @@ The teacher is used during guardrail training only. The default guardrail does *
 
 ## Included checkpoints
 
-Recommended layout:
+Layout:
 
 ```text
 checkpoints/
