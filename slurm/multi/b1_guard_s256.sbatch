@@ -7,20 +7,20 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/b1-g-s256_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/b1-g-s256_%j.err
+#SBATCH -o $SCRATCH/logs/b1-g-s256_%j.out
+#SBATCH -e $SCRATCH/logs/b1-g-s256_%j.err
 
 # Multi-seed guardrail retrain for mit-b1, seed 256, supervision=dense_multi.
 # Student SKD checkpoint is reused (not retrained) — this measures guardrail
 # RNG variance only (conv init, corruption augmentation draws, shuffle order).
 
 set -euo pipefail
-source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+source $SCRATCH/venvs/guardrail/bin/activate
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
-export REPO=/home/manors/Guardrail-Distillation
+export REPO=~/Guardrail-Distillation
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
@@ -29,8 +29,8 @@ MODEL=b1
 SUPERVISION_TYPE=dense_multi
 SEED=256
 
-MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
-TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+MIT_STUDENT=$(find $SCRATCH ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
+TEACHER=$(find $SCRATCH ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
 SRC_DIR="${SRC_DIR:-}"
 if [ -z "$SRC_DIR" ]; then
@@ -42,7 +42,7 @@ fi
 
 OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_s${SEED}_j${SLURM_JOB_ID}"
 
-HF_HOME=/scratch/gautschi/manors/hf_cache \
+HF_HOME=$SCRATCH/hf_cache \
 python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir "$OUT" \

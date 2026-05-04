@@ -6,8 +6,8 @@
 #SBATCH --time=01:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
-#SBATCH -o /scratch/gautschi/manors/logs/b1-fig-silent_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/b1-fig-silent_%j.err
+#SBATCH -o $SCRATCH/logs/b1-fig-silent_%j.out
+#SBATCH -e $SCRATCH/logs/b1-fig-silent_%j.err
 
 # Qualitative figure: silent confident failure under shift (4 images x 7 panels).
 # Loads mit-b1 student + two guardrail heads (teacher-supervised dense_multi,
@@ -15,18 +15,18 @@
 # Runs on highmem (CPU) — workload is 4 forward passes, seconds of compute.
 
 set -euo pipefail
-source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+source $SCRATCH/venvs/guardrail/bin/activate
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
-export REPO=/home/manors/Guardrail-Distillation
+export REPO=~/Guardrail-Distillation
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
 MODEL=b1
-export MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
+export MIT_STUDENT=$(find $SCRATCH ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
 
 # Student checkpoint (SKD). Override with STUDENT_CKPT=/abs/path.
 STUDENT_CKPT="${STUDENT_CKPT:-}"

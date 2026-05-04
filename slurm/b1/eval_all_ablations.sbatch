@@ -6,23 +6,23 @@
 #SBATCH --time=12:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
-#SBATCH -o /scratch/gautschi/manors/logs/b1-eval-all_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/b1-eval-all_%j.err
+#SBATCH -o $SCRATCH/logs/b1-eval-all_%j.out
+#SBATCH -e $SCRATCH/logs/b1-eval-all_%j.err
 
 set -euo pipefail
-source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+source $SCRATCH/venvs/guardrail/bin/activate
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
-export REPO=/home/manors/Guardrail-Distillation
+export REPO=~/Guardrail-Distillation
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
 MODEL=b1
-MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
-TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+MIT_STUDENT=$(find $SCRATCH ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
+TEACHER=$(find $SCRATCH ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
 # Student (newest SKD checkpoint for b1)
 SKD_DIR=$(ls -td runs/mit-${MODEL}_skd_*/student_skd.ckpt 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
@@ -53,7 +53,7 @@ run_city () {
   echo "============================================"
   echo "[CS  ] mode=$MODE   out=$EVAL_DIR"
   echo "============================================"
-  HF_HOME=/scratch/gautschi/manors/hf_cache \
+  HF_HOME=$SCRATCH/hf_cache \
   python -u src/eval/full_eval.py eval \
     --run-id "city_${MODEL}_skd_${MODE}" \
     --dataset-name cityscapes \
@@ -79,7 +79,7 @@ run_acdc () {
     echo "============================================"
     echo "[ACDC] mode=$MODE domain=$DOMAIN   out=$EVAL_DIR"
     echo "============================================"
-    HF_HOME=/scratch/gautschi/manors/hf_cache \
+    HF_HOME=$SCRATCH/hf_cache \
     python -u src/eval/full_eval.py eval \
       --run-id "acdc_${MODEL}_skd_${MODE}_${DOMAIN}" \
       --dataset-name acdc \

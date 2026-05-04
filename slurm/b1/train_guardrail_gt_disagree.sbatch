@@ -7,8 +7,8 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/b1-guard-gt-dis_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/b1-guard-gt-dis_%j.err
+#SBATCH -o $SCRATCH/logs/b1-guard-gt-dis_%j.out
+#SBATCH -e $SCRATCH/logs/b1-guard-gt-dis_%j.err
 
 # GT-supervised baseline — gt_disagree: same GuardrailPlusHead architecture
 # but trained on ground-truth student failure (student_argmax != label) instead
@@ -16,12 +16,12 @@
 # under OOD shift, the teacher signal generalizes better than GT labels.
 
 set -euo pipefail
-source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+source $SCRATCH/venvs/guardrail/bin/activate
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
-export REPO=/home/manors/Guardrail-Distillation
+export REPO=~/Guardrail-Distillation
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
@@ -29,8 +29,8 @@ cd "$REPO"
 MODEL=b1
 SUPERVISION_TYPE=gt_disagree
 
-MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
-TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+MIT_STUDENT=$(find $SCRATCH ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
+TEACHER=$(find $SCRATCH ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
 SRC_DIR="${SRC_DIR:-}"
 if [ -z "$SRC_DIR" ]; then
@@ -42,7 +42,7 @@ fi
 
 OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_j${SLURM_JOB_ID}"
 
-HF_HOME=/scratch/gautschi/manors/hf_cache \
+HF_HOME=$SCRATCH/hf_cache \
 python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir "$OUT" \

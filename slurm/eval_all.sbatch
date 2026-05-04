@@ -7,26 +7,26 @@
 #SBATCH -A lilly-rob1
 #SBATCH --gres=gpu:1
 #SBATCH -p smallgpu
-#SBATCH -o /scratch/gautschi/manors/logs/eval-all_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/eval-all_%j.err
+#SBATCH -o $SCRATCH/logs/eval-all_%j.out
+#SBATCH -e $SCRATCH/logs/eval-all_%j.err
 
 set -euo pipefail
 # Line-buffer stdout/stderr so SLURM logs show the last command before any crash.
 exec > >(stdbuf -oL cat) 2> >(stdbuf -oL cat >&2)
 trap 'rc=$?; echo "FAILED rc=$rc at line $LINENO: $BASH_COMMAND" >&2' ERR
 set -x
-source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+source $SCRATCH/venvs/guardrail/bin/activate
 set +x
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
-export REPO=/home/manors/Guardrail-Distillation
+export REPO=~/Guardrail-Distillation
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
-FAIL_LOG="/scratch/gautschi/manors/logs/eval-all_${SLURM_JOB_ID:-local}_failures.log"
+FAIL_LOG="$SCRATCH/logs/eval-all_${SLURM_JOB_ID:-local}_failures.log"
 : > "$FAIL_LOG"
 echo "[fail-log] $FAIL_LOG"
 
@@ -45,11 +45,11 @@ try_eval () {
   echo "[ok  ] $label"
 }
 
-TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+TEACHER=$(find $SCRATCH ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
 find_mit () {
   local bb="$1"
-  find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${bb}/snapshots/*" -type d 2>/dev/null | head -n1
+  find $SCRATCH ~/.cache -path "*models--nvidia--mit-${bb}/snapshots/*" -type d 2>/dev/null | head -n1
 }
 
 find_skd () {
@@ -146,7 +146,7 @@ run_one () {
     echo "============================================"
     echo "[CS  ] $BB/$TAG   out=$EVAL_DIR"
     echo "============================================"
-    try_eval "city $BB/$TAG" env HF_HOME=/scratch/gautschi/manors/hf_cache \
+    try_eval "city $BB/$TAG" env HF_HOME=$SCRATCH/hf_cache \
     python -u src/eval/full_eval.py eval \
       --run-id "city_${BB}_${TAG}" \
       --dataset-name cityscapes \
@@ -168,7 +168,7 @@ run_one () {
       echo "============================================"
       echo "[ACDC] $BB/$TAG domain=$DOMAIN   out=$EVAL_DIR"
       echo "============================================"
-      try_eval "acdc $BB/$TAG/$DOMAIN" env HF_HOME=/scratch/gautschi/manors/hf_cache \
+      try_eval "acdc $BB/$TAG/$DOMAIN" env HF_HOME=$SCRATCH/hf_cache \
       python -u src/eval/full_eval.py eval \
         --run-id "acdc_${BB}_${TAG}_${DOMAIN}" \
         --dataset-name acdc \
@@ -195,7 +195,7 @@ run_one () {
     echo "============================================"
     echo "[IDD ] $BB/$TAG   out=$EVAL_DIR"
     echo "============================================"
-    try_eval "idd $BB/$TAG" env HF_HOME=/scratch/gautschi/manors/hf_cache \
+    try_eval "idd $BB/$TAG" env HF_HOME=$SCRATCH/hf_cache \
     python -u src/eval/full_eval.py eval \
       --run-id "idd_${BB}_${TAG}" \
       --dataset-name idd \
@@ -220,7 +220,7 @@ run_one () {
     echo "============================================"
     echo "[BDD ] $BB/$TAG   out=$EVAL_DIR"
     echo "============================================"
-    try_eval "bdd $BB/$TAG" env HF_HOME=/scratch/gautschi/manors/hf_cache \
+    try_eval "bdd $BB/$TAG" env HF_HOME=$SCRATCH/hf_cache \
     python -u src/eval/full_eval.py eval \
       --run-id "bdd_${BB}_${TAG}" \
       --dataset-name bdd \

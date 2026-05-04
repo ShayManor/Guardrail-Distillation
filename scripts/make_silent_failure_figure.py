@@ -136,7 +136,10 @@ def resolve_backbone(model_tag: str, env_key: str) -> str:
         return override
     # Mirror the HF-snapshot discovery the slurm scripts use.
     candidates = []
-    for root in ("/scratch/gautschi/manors", str(Path.home() / ".cache")):
+    scratch = os.environ.get("SCRATCH")
+    roots = [scratch] if scratch else []
+    roots.append(str(Path.home() / ".cache"))
+    for root in roots:
         candidates.extend(Path(root).glob(f"**/models--nvidia--{model_tag}/snapshots/*"))
     for c in candidates:
         if c.is_dir():

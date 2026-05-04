@@ -7,8 +7,8 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/b1-4-guard_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/b1-4-guard_%j.err
+#SBATCH -o $SCRATCH/logs/b1-4-guard_%j.out
+#SBATCH -e $SCRATCH/logs/b1-4-guard_%j.err
 
 # Train the Guardrail++ head for mit-b1 with the paper's default supervision
 # (dense_multi). To train an ablation variant run:
@@ -22,12 +22,12 @@
 # launches all four ablation modes together.
 
 set -euo pipefail
-source /scratch/gautschi/manors/venvs/guardrail/bin/activate
+source $SCRATCH/venvs/guardrail/bin/activate
 
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache/transformers
-export REPO=/home/manors/Guardrail-Distillation
+export REPO=~/Guardrail-Distillation
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
@@ -36,8 +36,8 @@ MODEL=b1
 SUPERVISION_TYPE="${SUPERVISION_TYPE:-dense_multi}"
 SEED="${SEED:-42}"
 
-MIT_STUDENT=$(find /scratch/gautschi/manors ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
-TEACHER=$(find /scratch/gautschi/manors ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
+MIT_STUDENT=$(find $SCRATCH ~/.cache -path "*models--nvidia--mit-${MODEL}/snapshots/*" -type d 2>/dev/null | head -n1)
+TEACHER=$(find $SCRATCH ~/.cache -path '*models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024/snapshots/*' -type d 2>/dev/null | head -n1)
 
 # Auto-discover latest SKD run (override: SRC_DIR=<path> sbatch ...)
 SRC_DIR="${SRC_DIR:-}"
@@ -50,7 +50,7 @@ fi
 
 OUT="runs/mit-${MODEL}_guard_${SUPERVISION_TYPE}_s${SEED}_j${SLURM_JOB_ID}"
 
-HF_HOME=/scratch/gautschi/manors/hf_cache \
+HF_HOME=$SCRATCH/hf_cache \
 python -u src/train/run.py train \
   --dataset-path "$REPO/data/cityscapes" \
   --output-dir "$OUT" \
