@@ -142,6 +142,13 @@ run_one () {
     return 0
   fi
 
+  # Optional: time the guardrail head in FP16 + torch.compile. Student/teacher/MC
+  # stay FP32 so baselines match deployment. Set GUARDRAIL_FAST=1 to enable.
+  FAST_FLAG=""
+  if [ -n "${GUARDRAIL_FAST:-}" ]; then
+    FAST_FLAG="--guardrail-fast"
+  fi
+
   if [ "$DATASET" = "city" ]; then
     echo "============================================"
     echo "[CS  ] $BB/$TAG   out=$EVAL_DIR"
@@ -162,7 +169,7 @@ run_one () {
       --mc-dropout-passes 4 \
       --output-dir "$EVAL_DIR" \
       --batch-size 4 \
-      --num-workers 4
+      --num-workers 4 $FAST_FLAG
   elif [ "$DATASET" = "acdc" ]; then
     for DOMAIN in fog night rain snow all; do
       echo "============================================"
@@ -185,7 +192,7 @@ run_one () {
         --mc-dropout-passes 4 \
         --output-dir "$EVAL_DIR" \
         --batch-size 4 \
-        --num-workers 4
+        --num-workers 4 $FAST_FLAG
     done
   elif [ "$DATASET" = "idd" ]; then
     if [ ! -d "$REPO/data/idd/leftImg8bit/val" ]; then
@@ -211,7 +218,7 @@ run_one () {
       --mc-dropout-passes 4 \
       --output-dir "$EVAL_DIR" \
       --batch-size 4 \
-      --num-workers 4
+      --num-workers 4 $FAST_FLAG
   else  # bdd
     if [ ! -d "$REPO/data/bdd100k/seg/images/val" ]; then
       echo "[skip] $DATASET $BB/$TAG — $REPO/data/bdd100k not staged yet"
@@ -236,7 +243,7 @@ run_one () {
       --mc-dropout-passes 4 \
       --output-dir "$EVAL_DIR" \
       --batch-size 4 \
-      --num-workers 4
+      --num-workers 4 $FAST_FLAG
   fi
 }
 

@@ -768,6 +768,23 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     teacher_params = count_parameters(teacher) if teacher is not None else 0
     guardrail_params = count_parameters(guardrail) if guardrail is not None else 0
 
+    # Optional FP16 + torch.compile for the guardrail head only. Cheap launch-bound
+    # network benefits most from kernel fusion (compile) + halved memory traffic (fp16).
+    # Student/teacher/MC-Dropout intentionally stay FP32 so baselines match deployment.
+    guardrail_fast = bool(getattr(args, "guardrail_fast", False)) and guardrail is not None and "cuda" in str(cfg.device)
+    if guardrail_fast:
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+        guardrail = guardrail.half()
+        try:
+            guardrail = torch.compile(guardrail, mode="reduce-overhead", fullgraph=False)
+            print("[eval] guardrail-fast: FP16 + torch.compile(reduce-overhead) enabled")
+        except Exception as e:
+            print(f"[eval] guardrail-fast: torch.compile unavailable ({e}); using FP16 only")
+
     # Warmup
     warm_batches = max(0, int(args.warmup_batches))
     if warm_batches > 0:
@@ -794,10 +811,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 if isinstance(out, tuple) and len(out) > 1:
                     feat = out[1]
                 _wfeat = feat if guardrail_expects_feat else None
+                _wlogits = logits.half() if guardrail_fast else logits
+                if _wfeat is not None and guardrail_fast:
+                    _wfeat = _wfeat.half()
                 try:
-                    _ = guardrail(logits, _wfeat)
+                    _ = guardrail(_wlogits, _wfeat)
                 except TypeError:
-                    _ = guardrail(logits)
+                    _ = guardrail(_wlogits)
 
     per_image_rows: List[Dict[str, Any]] = []
     latency_rows: List[Dict[str, Any]] = []
@@ -856,11 +876,15 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         if guardrail is not None and args.guardrail_student_name == args.student_name:
             _guard_feat = student_feat if guardrail_expects_feat else None
             with Timer(cfg.device) as t_guard:
+                _glogits = student_logits.half() if guardrail_fast else student_logits
+                _gfeat = _guard_feat.half() if (guardrail_fast and _guard_feat is not None) else _guard_feat
                 try:
-                    guard_raw = guardrail(student_logits, _guard_feat)
+                    guard_raw = guardrail(_glogits, _gfeat)
                 except TypeError:
-                    guard_raw = guardrail(student_logits)
+                    guard_raw = guardrail(_glogits)
             guard_ms_img = t_guard.ms / max(bsz, 1)
+            if guardrail_fast and isinstance(guard_raw, dict):
+                guard_raw = {k: (v.float() if torch.is_tensor(v) else v) for k, v in guard_raw.items()}
 
         # MC dropout: per-pixel predictive entropy + mutual information.
         mc_entropies: Optional[List[float]] = None
@@ -1689,6 +1713,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--failure-label", default="top20", choices=["median", "top20", "top10"])
     p_eval.add_argument("--calibration-bins", type=int, default=10)
     p_eval.add_argument("--warmup-batches", type=int, default=5)
+    p_eval.add_argument(
+        "--guardrail-fast",
+        action="store_true",
+        help="Run the guardrail head in FP16 + torch.compile for latency timing. "
+             "Student/teacher/MC-Dropout stay FP32 to match the deployed pipeline.",
+    )
     p_eval.add_argument("--progress-every", type=int, default=50)
     p_eval.add_argument("--seed", type=int, default=42)
     p_eval.add_argument("--seeds", default=None, help="Comma-separated seeds for multi-seed runs, e.g. 42,137,256. Overrides --seed.")
