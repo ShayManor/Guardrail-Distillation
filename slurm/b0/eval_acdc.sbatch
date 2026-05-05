@@ -4,8 +4,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
 #SBATCH --time=04:00:00
-#SBATCH -A lilly-rob1
-#SBATCH -p highmem
+#SBATCH -A your-account
+#SBATCH -p your-cpu-partition
 #SBATCH -o $SCRATCH/logs/b0-eval-acdc_%j.out
 #SBATCH -e $SCRATCH/logs/b0-eval-acdc_%j.err
 

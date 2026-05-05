@@ -4,15 +4,15 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
 #SBATCH --time=01:00:00
-#SBATCH -A lilly-rob1
-#SBATCH -p highmem
+#SBATCH -A your-account
+#SBATCH -p your-cpu-partition
 #SBATCH -o $SCRATCH/logs/b1-fig-silent_%j.out
 #SBATCH -e $SCRATCH/logs/b1-fig-silent_%j.err
 
 # Qualitative figure: silent confident failure under shift (4 images x 7 panels).
 # Loads mit-b1 student + two guardrail heads (teacher-supervised dense_multi,
 # GT-supervised gt_disagree) and renders one PNG.
-# Runs on highmem (CPU) — workload is 4 forward passes, seconds of compute.
+# Runs CPU-only — workload is 4 forward passes, seconds of compute.
 
 set -euo pipefail
 source $SCRATCH/venvs/guardrail/bin/activate
