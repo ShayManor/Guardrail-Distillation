@@ -4,9 +4,9 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=06:00:00
-#SBATCH -A your-account
+#SBATCH -A lilly-rob1
 #SBATCH --gres=gpu:1
-#SBATCH -p your-gpu-partition
+#SBATCH -p smallgpu
 #SBATCH -o $SCRATCH/logs/eval-all_%j.out
 #SBATCH -e $SCRATCH/logs/eval-all_%j.err
 

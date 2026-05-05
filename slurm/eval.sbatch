@@ -4,8 +4,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
 #SBATCH --time=06:00:00
-#SBATCH -A your-account
-#SBATCH -p your-cpu-partition
+#SBATCH -A lilly-rob1
+#SBATCH -p highmem
 #SBATCH -o $SCRATCH/logs/eval-all_%j.out
 #SBATCH -e $SCRATCH/logs/eval-all_%j.err
 
