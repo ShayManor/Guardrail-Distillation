@@ -69,6 +69,7 @@ for f in "$STUDENT_CKPT" "$GUARD_TEACHER_CKPT" "$GUARD_GT_CKPT"; do
 done
 
 OUT="$REPO/src/analysis/figures/fig_silent_confident_failure.png"
+OUT_STRONG="$REPO/src/analysis/figures/fig_acdc_fog_strong.png"
 
 echo "============================================"
 echo "[fig] rendering silent-confident-failure figure"
@@ -80,19 +81,31 @@ python -u scripts/make_silent_failure_figure.py \
   --device cpu
 
 echo "[DONE] figure written to: $OUT"
-echo "        (paper includes via \\graphicspath{{../src/analysis/figures/}})"
+
+echo "============================================"
+echo "[fig] rendering strong 4x4 figure (4 datasets x 4 panels)"
+echo "  out=$OUT_STRONG"
+echo "============================================"
+
+# Crops the 4-row source PNG into a tight 4-dataset x 4-panel grid.
+# Pure CPU/PIL work, no checkpoints needed.
+python -u src/analysis/figure_scripts/fig_acdc_fog_silent_failure.py
+
+echo "[DONE] strong figure written to: $OUT_STRONG"
+echo "        (paper includes both via \\graphicspath{{../src/analysis/figures/}})"
 
 # ─── Publish to git remote ──────────────────────────────────────────────────
-# User-authorized: commit the rendered PNG and push so the figure is available
-# off-cluster. We only stage the figure file itself, never `git add -A`.
+# User-authorized: commit the rendered PNGs and push so figures are available
+# off-cluster. We only stage the figure files themselves, never `git add -A`.
 echo "============================================"
-echo "[git] staging + pushing figure"
+echo "[git] staging + pushing figures"
 echo "============================================"
 cd "$REPO"
 REL_OUT="${OUT#$REPO/}"
-git add "$REL_OUT"
+REL_OUT_STRONG="${OUT_STRONG#$REPO/}"
+git add "$REL_OUT" "$REL_OUT_STRONG"
 if git diff --cached --quiet; then
-  echo "[git] no changes to commit (figure byte-identical to HEAD)"
+  echo "[git] no changes to commit (figures byte-identical to HEAD)"
 else
   BRANCH=$(git rev-parse --abbrev-ref HEAD)
   git commit -m "figure: refresh silent-confident-failure qualitative grid (b1 job ${SLURM_JOB_ID:-local})"
