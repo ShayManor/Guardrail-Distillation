@@ -10,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
 
-from _lib import apply_style, load_table, savefig
+from _lib import apply_style, load_table, savefig, per_seed_apply
 
 
 # (label, supervision_type, column, higher_is_fail, color)
@@ -56,24 +56,33 @@ def main():
     fig, ax = plt.subplots(figsize=(7.5, 3.8))
 
     for i, (label, stype, col, hi, color) in enumerate(METHODS):
-        vals = []
+        means, stds = [], []
         sub_type = pi[pi["supervision_type"] == stype]
         for cond in CONDITIONS:
             sub = sub_type[sub_type["domain"] == cond]
             if sub.empty or col not in sub.columns:
-                vals.append(np.nan)
-            else:
-                vals.append(failure_auroc(sub, col, hi))
+                means.append(np.nan); stds.append(np.nan); continue
+            m, s, _ = per_seed_apply(sub,
+                lambda g, _c=col, _h=hi: failure_auroc(g, _c, _h))
+            means.append(m); stds.append(s if np.isfinite(s) else 0.0)
+        means = np.asarray(means); stds = np.asarray(stds)
         offset = (i - (n_methods - 1) / 2) * width
         is_ours = "ours" in label
-        bars = ax.bar(x + offset, vals, width=width * 0.9, color=color,
+        bars = ax.bar(x + offset, means, width=width * 0.9, color=color,
                       label=label,
                       edgecolor="#1a1a1a" if is_ours else "white",
                       linewidth=1.2 if is_ours else 0.5)
-        # Value labels
-        for bar, v in zip(bars, vals):
+        for xi, mv, sv in zip(x, means, stds):
+            if np.isfinite(mv) and sv > 0:
+                ax.errorbar(xi + offset, mv, yerr=sv, fmt="none",
+                            ecolor="#222", elinewidth=0.8, capsize=1.6,
+                            capthick=0.8, zorder=4)
+        # Value labels — placed above the upper error-bar cap so they never
+        # collide with caps when std is large (e.g. T-Multi night ±.026).
+        for bar, v, s in zip(bars, means, stds):
             if np.isfinite(v):
-                ax.text(bar.get_x() + bar.get_width() / 2, v + 0.008,
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        v + (s if s > 0 else 0) + 0.010,
                         f"{v:.2f}", ha="center", va="bottom", fontsize=6.5)
 
     ax.axhline(0.5, color="gray", ls=":", lw=0.9, alpha=0.5)

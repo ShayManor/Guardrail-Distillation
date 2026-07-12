@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 from _lib import (
     apply_style, load_table, savefig, cf_auroc, pool_acdc_domain,
-    available_datasets, DATASET_LABELS,
+    available_datasets, DATASET_LABELS, per_seed_apply,
 )
 
 # Which score to use for each supervision type
@@ -46,36 +46,32 @@ def main():
     fig, axes_2d = plt.subplots(nrows, ncols, figsize=(10, 7.5), sharey=True)
     axes = axes_2d.flatten()
 
+    def _plot(ax, label, sub, col, hi):
+        color, ls, lw, marker, ms = METHOD_STYLE[label]
+        means, stds = [], []
+        for thr in THRESHOLDS:
+            m, s, _ = per_seed_apply(sub,
+                lambda g, _c=col, _h=hi, _t=thr: cf_auroc(g, _c, _t, higher_is_fail=_h))
+            means.append(m); stds.append(s if np.isfinite(s) else 0.0)
+        means = np.asarray(means); stds = np.asarray(stds)
+        ax.plot(THRESHOLDS, means, color=color, ls=ls, lw=lw, marker=marker,
+                markersize=ms, label=label)
+        if (stds > 0).any():
+            ax.fill_between(THRESHOLDS, means - stds, means + stds,
+                            color=color, alpha=0.18, lw=0)
+
     for idx, ds in enumerate(datasets):
         ax = axes[idx]
         ds_data = pi[pi["dataset"] == ds]
 
-        # Post-hoc methods (use dense_multi rows for student scores)
+        # Post-hoc baselines: pull from dense_multi rows so we get all 3 seeds.
         sub_any = ds_data[ds_data["supervision_type"] == "dense_multi"]
         if sub_any.empty:
             sub_any = ds_data.drop_duplicates(subset=["image_id"])
 
-        # MSP
-        msp_vals = []
-        for thr in THRESHOLDS:
-            tmp = sub_any.copy()
-            tmp["_neg_msp"] = -pd.to_numeric(tmp["student_msp"], errors="coerce")
-            msp_vals.append(cf_auroc(tmp, "_neg_msp", thr, higher_is_fail=True))
-        color, ls, lw, marker, ms = METHOD_STYLE["MSP"]
-        ax.plot(THRESHOLDS, msp_vals, color=color, ls=ls, lw=lw, marker=marker,
-                markersize=ms, label="MSP")
+        _plot(ax, "MSP", sub_any, "student_msp", False)
+        _plot(ax, "MaxLogit", sub_any, "max_logit", False)
 
-        # MaxLogit
-        ml_vals = []
-        for thr in THRESHOLDS:
-            tmp = sub_any.copy()
-            tmp["_neg_ml"] = -pd.to_numeric(tmp["max_logit"], errors="coerce")
-            ml_vals.append(cf_auroc(tmp, "_neg_ml", thr, higher_is_fail=True))
-        color, ls, lw, marker, ms = METHOD_STYLE["MaxLogit"]
-        ax.plot(THRESHOLDS, ml_vals, color=color, ls=ls, lw=lw, marker=marker,
-                markersize=ms, label="MaxLogit")
-
-        # Learned heads
         mode_labels = {
             "gt_disagree": "GT-Dis",
             "gt_risk": "GT-Gap",
@@ -86,11 +82,7 @@ def main():
             sub = ds_data[ds_data["supervision_type"] == mode]
             if sub.empty or col not in sub.columns:
                 continue
-            vals = [cf_auroc(sub, col, thr, higher_is_fail=hi) for thr in THRESHOLDS]
-            label = mode_labels[mode]
-            color, ls, lw, marker, ms = METHOD_STYLE[label]
-            ax.plot(THRESHOLDS, vals, color=color, ls=ls, lw=lw, marker=marker,
-                    markersize=ms, label=label)
+            _plot(ax, mode_labels[mode], sub, col, hi)
 
         ax.axhline(0.5, color="gray", ls=":", lw=0.8, alpha=0.4)
         ax.set_xlabel("MSP threshold")

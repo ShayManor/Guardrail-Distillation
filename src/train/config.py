@@ -39,6 +39,7 @@ class Config:
     dense_gap_weight: float = 1.0
     scalar_benefit_weight: float = 1.0
     use_student_features: bool = True
+    use_confidence_features: bool = False
     corruption_prob: float = 0.5
 
     crop_size: int = 512

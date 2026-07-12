@@ -61,6 +61,10 @@ def parse_args():
     train_p.add_argument("--no-student-features", dest="use_student_features",
         action="store_false",
         help="Disable student feature input (logits-only guardrail).")
+    train_p.add_argument("--use-confidence-features", dest="use_confidence_features",
+        action="store_true", default=False,
+        help="Feed per-pixel energy + max-logit into the guardrail head "
+             "(end-to-end fusion; default: off).")
     train_p.add_argument("--skip-sup",       action="store_true")
     train_p.add_argument("--skip-kd",        action="store_true")
     train_p.add_argument("--skip-skd",       action="store_true")
@@ -111,6 +115,7 @@ def build_cfg(args):
         dense_gap_weight=getattr(args, "dense_gap_weight", 1.0),
         scalar_benefit_weight=getattr(args, "scalar_benefit_weight", 1.0),
         use_student_features=getattr(args, "use_student_features", True),
+        use_confidence_features=getattr(args, "use_confidence_features", False),
         seed=getattr(args, "seed", 42),
     )
 
@@ -249,7 +254,10 @@ def run_train_pipeline(args, cfg):
         else:
             print("  [Guard] Logits-only mode (feat_channels=0)")
 
-        guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch)
+        guardrail = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch,
+                                      use_confidence_features=cfg.use_confidence_features)
+        if cfg.use_confidence_features:
+            print("  [Guard] Confidence features ON (energy + max-logit input channels)")
         _, global_step = train_guardrail(
             guardrail, best_student, teacher, train_loader, val_loader, cfg,
             use_student_features=cfg.use_student_features, global_step=global_step,

@@ -19,7 +19,7 @@ import matplotlib.patches as mpatches
 
 from _lib import (
     apply_style, load_table, savefig, cf_auroc, cf_auroc_stratified,
-    pool_acdc_domain, available_datasets, DATASET_LABELS,
+    pool_acdc_domain, available_datasets, DATASET_LABELS, per_seed_apply,
 )
 
 # ACDC uses a stratified failure cutoff (per fog/night/rain/snow) at a
@@ -70,36 +70,35 @@ SHORT_DS = {
 }
 
 
-def _score_auroc(sub, col, hi, ds):
-    """Route ACDC rows through the condition-stratified AUROC with the ACDC
-    threshold; other datasets use the standard pooled AUROC at the default
-    threshold. The ACDC pool mixes fog/night/rain/snow with very different
-    logit scales and base failure rates, so the pooled top-20% cutoff puts
-    18 of 19 confident failures in night at MSP>=0.85 — collapsing the task
-    into a night classifier. Per-condition cutoffs restore a fair label."""
+def _score_fn(col, hi, ds):
+    """Per-seed scorer that routes ACDC through the condition-stratified
+    AUROC. Pooled ACDC at MSP>=0.85 puts 18/19 confident failures in night,
+    collapsing the task into a night classifier — per-condition cutoffs
+    restore a fair label."""
     if ds == "acdc":
-        return cf_auroc_stratified(sub, col, ACDC_MSP_THR,
-                                   group_col="condition",
-                                   higher_is_fail=hi)
-    return cf_auroc(sub, col, DEFAULT_MSP_THR, higher_is_fail=hi)
+        return lambda g: cf_auroc_stratified(g, col, ACDC_MSP_THR,
+                                             group_col="condition",
+                                             higher_is_fail=hi)
+    return lambda g: cf_auroc(g, col, DEFAULT_MSP_THR, higher_is_fail=hi)
 
 
 def compute_aurocs(pi, datasets):
-    """Compute CF-AUROC for every (method, dataset) pair."""
+    """Per-seed mean/std for every (method, dataset) pair."""
     rows = []
     for ds in datasets:
         ds_data = pi[pi["dataset"] == ds]
-        # Post-hoc scores are identical across supervision types
+        # Post-hoc scores are identical across supervision types; use
+        # dense_multi rows so we cover all 3 retrain seeds.
         sub_any = ds_data[ds_data["supervision_type"] == "dense_multi"]
         if sub_any.empty:
             sub_any = ds_data.drop_duplicates(subset=["image_id"])
 
         for label, col, hi in POSTHOC:
             if col not in sub_any.columns:
-                rows.append({"method": label, "dataset": ds, "auroc": np.nan})
+                rows.append({"method": label, "dataset": ds, "mean": np.nan, "std": np.nan, "n": 0})
                 continue
-            a = _score_auroc(sub_any, col, hi, ds)
-            rows.append({"method": label, "dataset": ds, "auroc": a})
+            m, s, n = per_seed_apply(sub_any, _score_fn(col, hi, ds))
+            rows.append({"method": label, "dataset": ds, "mean": m, "std": s, "n": n})
 
         mode_labels = {
             "dense_multi": "T-Multi (ours)",
@@ -110,10 +109,10 @@ def compute_aurocs(pi, datasets):
             sub = ds_data[ds_data["supervision_type"] == mode]
             label = mode_labels[mode]
             if sub.empty or col not in sub.columns:
-                rows.append({"method": label, "dataset": ds, "auroc": np.nan})
+                rows.append({"method": label, "dataset": ds, "mean": np.nan, "std": np.nan, "n": 0})
                 continue
-            a = _score_auroc(sub, col, True, ds)
-            rows.append({"method": label, "dataset": ds, "auroc": a})
+            m, s, n = per_seed_apply(sub, _score_fn(col, True, ds))
+            rows.append({"method": label, "dataset": ds, "mean": m, "std": s, "n": n})
 
     return pd.DataFrame(rows)
 
@@ -140,22 +139,28 @@ def main():
 
     for j, method in enumerate(ALL_METHODS):
         offset = (j - (n_methods - 1) / 2) * bar_w
-        vals = []
+        means, stds = [], []
         for ds in datasets:
             sub = df[(df["method"] == method) & (df["dataset"] == ds)]
-            v = float(sub["auroc"].iloc[0]) if not sub.empty and np.isfinite(sub["auroc"].iloc[0]) else np.nan
-            vals.append(v)
-        vals_arr = np.array(vals)
+            if sub.empty:
+                means.append(np.nan); stds.append(np.nan); continue
+            means.append(float(sub["mean"].iloc[0]))
+            s = float(sub["std"].iloc[0])
+            stds.append(s if np.isfinite(s) else 0.0)
+        means_arr = np.array(means)
+        stds_arr = np.array(stds)
         is_ours = "ours" in method
-        ax.bar(xs + offset, np.nan_to_num(vals_arr, nan=0), bar_w,
+        ax.bar(xs + offset, np.nan_to_num(means_arr, nan=0), bar_w,
                color=COLORS[method],
                edgecolor="#1a1a1a" if is_ours else "none",
                linewidth=1.3 if is_ours else 0,
                label=method, zorder=3 if is_ours else 2)
-        for i, v in enumerate(vals):
-            if np.isfinite(v) and v > 0.5:
-                ax.text(xs[i] + offset, v + 0.006, f"{v:.2f}",
-                        ha="center", va="bottom", fontsize=5.8, rotation=90)
+        # Error bars only where we actually have multi-seed data.
+        for i, (m, s) in enumerate(zip(means_arr, stds_arr)):
+            if np.isfinite(m) and s > 0:
+                ax.errorbar(xs[i] + offset, m, yerr=s, fmt="none",
+                            ecolor="#1a1a1a", elinewidth=0.9, capsize=2.0,
+                            capthick=0.9, zorder=4)
 
     # Banner above the bars (replaces the in-domain / OOD italics header).
     ax.text(0.5, 1.005, "distribution shift (OOD)",
@@ -182,27 +187,31 @@ def main():
     bw = 0.32
 
     for k, (gt_m, gc) in enumerate(zip(gt_methods, gt_colors)):
-        deltas = []
+        deltas, derrs = [], []
         for ds in delta_datasets:
-            t_val = df[(df["method"] == "T-Multi (ours)") & (df["dataset"] == ds)]["auroc"]
-            g_val = df[(df["method"] == gt_m) & (df["dataset"] == ds)]["auroc"]
-            t = float(t_val.iloc[0]) if not t_val.empty else np.nan
-            g = float(g_val.iloc[0]) if not g_val.empty else np.nan
+            tr = df[(df["method"] == "T-Multi (ours)") & (df["dataset"] == ds)]
+            gr = df[(df["method"] == gt_m) & (df["dataset"] == ds)]
+            t = float(tr["mean"].iloc[0]) if not tr.empty else np.nan
+            g = float(gr["mean"].iloc[0]) if not gr.empty else np.nan
+            ts = float(tr["std"].iloc[0]) if not tr.empty else np.nan
+            gs = float(gr["std"].iloc[0]) if not gr.empty else np.nan
             deltas.append(t - g if np.isfinite(t) and np.isfinite(g) else np.nan)
+            # Independent-seed std on the difference; treat single-seed std as 0.
+            ts2 = ts**2 if np.isfinite(ts) else 0.0
+            gs2 = gs**2 if np.isfinite(gs) else 0.0
+            derrs.append(np.sqrt(ts2 + gs2) if (np.isfinite(ts) or np.isfinite(gs)) else np.nan)
         deltas = np.array(deltas)
+        derrs = np.array(derrs)
         offset = (k - 0.5) * bw
         bars = ax2.bar(xs2 + offset, deltas * 100, bw,
                        color=gc, edgecolor="#1a1a1a", linewidth=0.8,
                        alpha=0.85, label=f"vs {gt_m}")
-        for bar, d in zip(bars, deltas):
-            if np.isfinite(d):
-                y = d * 100
-                va = "bottom" if y >= 0 else "top"
-                off = 0.18 if y >= 0 else -0.18
-                color = "#1b7a28" if d > 0.002 else "#a6201a" if d < -0.002 else "#666"
-                ax2.text(bar.get_x() + bar.get_width() / 2, y + off,
-                         f"{d*100:+.1f}", ha="center", va=va,
-                         fontsize=7.5, fontweight="bold", color=color)
+        for i, (bar, d, e) in enumerate(zip(bars, deltas, derrs)):
+            if np.isfinite(d) and np.isfinite(e) and e > 0:
+                ax2.errorbar(bar.get_x() + bar.get_width() / 2, d * 100,
+                             yerr=e * 100, fmt="none", ecolor="#1a1a1a",
+                             elinewidth=0.9, capsize=2.0, capthick=0.9,
+                             zorder=4)
 
     ax2.axhline(0, color="#333", lw=0.8)
     ax2.set_xticks(xs2)

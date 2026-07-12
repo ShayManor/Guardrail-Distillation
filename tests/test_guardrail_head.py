@@ -88,6 +88,24 @@ test("with features, disagree_logits shape",
 test("with features, gap_pred shape",
      out2["gap_pred"].shape == (2, 32, 64))
 
+# End-to-end fusion: confidence features (energy + max-logit) as input channels
+head_cf = GuardrailPlusHead(num_classes=19, feat_channels=32, use_confidence_features=True)
+test("conf-features flag stored", head_cf.use_confidence_features is True)
+test("conf-features add 2 input channels",
+     head_cf.encoder[0].in_channels == 19 + 32 + 2,
+     f"got {head_cf.encoder[0].in_channels}")
+logits, feats, _ = make_inputs(feat_ch=32)
+out_cf = head_cf(logits, feats)
+test("conf-features forward gap_pred shape", out_cf["gap_pred"].shape == (2, 32, 64))
+test("conf-features gap_pred finite", bool(torch.isfinite(out_cf["gap_pred"]).all()))
+# logits-only + conf features (no student features)
+head_cf2 = GuardrailPlusHead(num_classes=19, feat_channels=0, use_confidence_features=True)
+test("conf-features logits-only in_channels",
+     head_cf2.encoder[0].in_channels == 19 + 2)
+lo, _, _ = make_inputs(feat_ch=0)
+test("conf-features logits-only forward",
+     head_cf2(lo)["disagree_logits"].shape == (2, 32, 64))
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Section 2 — Loss modes

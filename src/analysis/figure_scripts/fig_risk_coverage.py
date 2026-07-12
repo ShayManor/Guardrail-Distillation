@@ -17,7 +17,7 @@ from matplotlib.lines import Line2D
 
 from _lib import (
     apply_style, load_table, savefig, risk_coverage_curve,
-    available_datasets, pool_acdc_domain, DATASET_LABELS,
+    available_datasets, pool_acdc_domain, DATASET_LABELS, per_seed_curve,
 )
 
 # Methods to plot: (label, supervision_type, column, higher_is_fail, color, ls, lw, alpha)
@@ -44,6 +44,8 @@ def main():
     fig, axes_2d = plt.subplots(nrows, ncols, figsize=(10, 8), sharey=False)
     axes = axes_2d.flatten()[:n_ds]
 
+    cov_grid = np.linspace(0.05, 1.0, 60)
+
     for ax, ds in zip(axes, datasets):
         ds_data = pi[pi["dataset"] == ds]
 
@@ -51,17 +53,24 @@ def main():
             sub = ds_data[ds_data["supervision_type"] == stype]
             if sub.empty or col not in sub.columns:
                 continue
-            cov, risk = risk_coverage_curve(sub, col, hi, n_points=50)
-            if len(cov) == 0:
+            mean, std, n = per_seed_curve(sub,
+                lambda g, _c=col, _h=hi: risk_coverage_curve(g, _c, _h, n_points=50),
+                cov_grid)
+            if not np.isfinite(mean).any():
                 continue
-            ax.plot(cov, risk, color=color, lw=lw, ls=ls, alpha=alpha, label=label)
+            ax.plot(cov_grid, mean, color=color, lw=lw, ls=ls, alpha=alpha, label=label)
+            if n >= 2 and np.isfinite(std).any():
+                ax.fill_between(cov_grid, mean - std, mean + std,
+                                color=color, alpha=alpha * 0.20, lw=0)
 
         # Oracle floor
         sub_any = ds_data[ds_data["supervision_type"] == "dense_multi"]
         if not sub_any.empty:
-            cov, risk = risk_coverage_curve(sub_any, "student_risk", True, n_points=50)
-            if len(cov):
-                ax.plot(cov, risk, color="#888", lw=1.0, ls=":", alpha=0.5, label="Oracle")
+            mean, std, n = per_seed_curve(sub_any,
+                lambda g: risk_coverage_curve(g, "student_risk", True, n_points=50),
+                cov_grid)
+            if np.isfinite(mean).any():
+                ax.plot(cov_grid, mean, color="#888", lw=1.0, ls=":", alpha=0.5, label="Oracle")
 
         ax.set_xlim(0.05, 1.0)
         ax.set_xlabel("Coverage")

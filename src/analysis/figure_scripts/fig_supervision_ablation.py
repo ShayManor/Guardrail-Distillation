@@ -12,7 +12,7 @@ from matplotlib.patches import Patch
 
 from _lib import (
     apply_style, load_table, savefig, cf_auroc, pool_acdc_domain,
-    available_datasets, DATASET_LABELS,
+    available_datasets, DATASET_LABELS, per_seed_apply,
 )
 
 MODES = ("dense_multi", "dense_gap", "dense_disagree", "scalar_benefit",
@@ -63,22 +63,19 @@ def main():
         sub_any = sub_ds[sub_ds["supervision_type"] == "dense_multi"]
         if sub_any.empty:
             sub_any = sub_ds.drop_duplicates(subset=["image_id"])
-        tmp = sub_any.copy()
-        tmp["_neg_msp"] = -pd.to_numeric(tmp["student_msp"], errors="coerce")
-        msp_val = cf_auroc(tmp, "_neg_msp", 0.85, higher_is_fail=True)
-        rows.append({"mode": "MSP", "dataset": ds, "auroc": msp_val})
+        m, s, n = per_seed_apply(sub_any,
+            lambda g: cf_auroc(g, "student_msp", 0.85, higher_is_fail=False))
+        rows.append({"mode": "MSP", "dataset": ds, "mean": m, "std": s, "n": n})
 
         for mode in MODES:
             sub = sub_ds[sub_ds["supervision_type"] == mode]
-            if sub.empty:
-                rows.append({"mode": mode, "dataset": ds, "auroc": np.nan})
-                continue
             col = trained_col(mode)
-            if col not in sub.columns:
-                rows.append({"mode": mode, "dataset": ds, "auroc": np.nan})
+            if sub.empty or col not in sub.columns:
+                rows.append({"mode": mode, "dataset": ds, "mean": np.nan, "std": np.nan, "n": 0})
                 continue
-            a = cf_auroc(sub, col, 0.85, higher_is_fail=True)
-            rows.append({"mode": mode, "dataset": ds, "auroc": a})
+            m, s, n = per_seed_apply(sub,
+                lambda g, _c=col: cf_auroc(g, _c, 0.85, higher_is_fail=True))
+            rows.append({"mode": mode, "dataset": ds, "mean": m, "std": s, "n": n})
 
     df = pd.DataFrame(rows)
 
@@ -110,22 +107,35 @@ def main():
     # 2) Bars: distinct color per dataset, consistent across all groups.
     for i, ds in enumerate(datasets):
         offset = (i - (n_ds - 1) / 2) * bar_w
-        vals = []
+        means, stds = [], []
         for m in mode_order:
             sub = df[(df["mode"] == m) & (df["dataset"] == ds)]
-            v = float(sub["auroc"].iloc[0]) if not sub.empty and np.isfinite(sub["auroc"].iloc[0]) else np.nan
-            vals.append(v)
+            if sub.empty:
+                means.append(np.nan); stds.append(np.nan); continue
+            mv = float(sub["mean"].iloc[0])
+            sv = float(sub["std"].iloc[0])
+            means.append(mv if np.isfinite(mv) else np.nan)
+            stds.append(sv if np.isfinite(sv) else 0.0)
+        means = np.asarray(means); stds = np.asarray(stds)
 
         color = DATASET_COLORS.get(ds, "#444444")
-        ax.bar(xs + offset, np.nan_to_num(vals, nan=0), width=bar_w,
+        ax.bar(xs + offset, np.nan_to_num(means, nan=0), width=bar_w,
                color=color, edgecolor="white", linewidth=0.6,
                label=DATASET_LABELS.get(ds, ds), zorder=3)
+        # Error bars only where multi-seed.
+        for xi, mv, sv in zip(xs, means, stds):
+            if np.isfinite(mv) and sv > 0:
+                ax.errorbar(xi + offset, mv, yerr=sv, fmt="none",
+                            ecolor="#222", elinewidth=0.8, capsize=1.6,
+                            capthick=0.8, zorder=4)
 
-        for xi, v in zip(xs, vals):
+        # Value labels — placed above the upper cap so error bars never punch
+        # through them.
+        for xi, v, sv in zip(xs, means, stds):
             if np.isfinite(v) and v >= y_lo:
-                ax.text(xi + offset, v + 0.008, f"{v:.2f}",
-                        ha="center", va="bottom", fontsize=6.5,
-                        rotation=90, color="#222", zorder=4)
+                ax.text(xi + offset, v + (sv if sv > 0 else 0) + 0.010,
+                        f"{v:.2f}", ha="center", va="bottom", fontsize=6.5,
+                        rotation=90, color="#222", zorder=5)
 
     # 3) Vertical separators between supervision categories (subtle).
     for x in (0.5, 1.5, 3.5):

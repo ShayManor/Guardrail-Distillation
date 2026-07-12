@@ -178,6 +178,50 @@ def mean_std_across_seeds(df: pd.DataFrame, group_keys: Iterable[str],
     return out
 
 
+def per_seed_apply(sub: pd.DataFrame, fn) -> Tuple[float, float, int]:
+    """Apply ``fn(seed_df) -> float`` per seed, return (mean, std, n).
+
+    std is NaN when n < 2. NaN values from fn are dropped before aggregation.
+    """
+    if "seed" not in sub.columns or sub.empty:
+        v = fn(sub) if not sub.empty else np.nan
+        return float(v), float("nan"), 0 if not np.isfinite(v) else 1
+    vals = []
+    for _, g in sub.groupby("seed"):
+        v = fn(g)
+        if v is not None and np.isfinite(v):
+            vals.append(float(v))
+    if not vals:
+        return float("nan"), float("nan"), 0
+    arr = np.asarray(vals)
+    return (float(arr.mean()),
+            float(arr.std(ddof=1)) if len(arr) > 1 else float("nan"),
+            len(arr))
+
+
+def per_seed_curve(sub: pd.DataFrame, fn, x_grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Apply ``fn(seed_df) -> (xs, ys)`` per seed, then interpolate each onto
+    ``x_grid`` and return (mean_y, std_y, n).
+    """
+    if "seed" not in sub.columns or sub.empty:
+        xs, ys = fn(sub) if not sub.empty else (np.array([]), np.array([]))
+        if len(xs) == 0:
+            return np.full_like(x_grid, np.nan, dtype=float), np.full_like(x_grid, np.nan, dtype=float), 0
+        return np.interp(x_grid, xs, ys), np.full_like(x_grid, np.nan, dtype=float), 1
+    rows = []
+    for _, g in sub.groupby("seed"):
+        xs, ys = fn(g)
+        if len(xs) >= 2:
+            rows.append(np.interp(x_grid, xs, ys))
+    if not rows:
+        nan = np.full_like(x_grid, np.nan, dtype=float)
+        return nan, nan, 0
+    M = np.vstack(rows)
+    mean = M.mean(axis=0)
+    std = M.std(axis=0, ddof=1) if M.shape[0] > 1 else np.full_like(mean, np.nan)
+    return mean, std, M.shape[0]
+
+
 def available_backbones(df: pd.DataFrame) -> list:
     if "backbone" not in df.columns:
         return []

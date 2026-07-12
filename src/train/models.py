@@ -106,9 +106,14 @@ class GuardrailPlusHead(nn.Module):
     aliased into per_image.csv as guardrailpp_utility_dense_{bce,gap}.
     """
 
-    def __init__(self, num_classes=19, feat_channels=0):
+    def __init__(self, num_classes=19, feat_channels=0, use_confidence_features=False):
         super().__init__()
-        in_ch = num_classes + feat_channels
+        # End-to-end fusion: feed per-pixel energy (-logsumexp) and max-logit as
+        # explicit input channels so a single learned score can combine dense
+        # disagreement prediction with confidence magnitude. Off by default.
+        self.use_confidence_features = use_confidence_features
+        conf_channels = 2 if use_confidence_features else 0
+        in_ch = num_classes + feat_channels + conf_channels
 
         self.encoder = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
@@ -122,15 +127,21 @@ class GuardrailPlusHead(nn.Module):
 
     def forward(self, student_logits, student_features=None):
         # Detach so the guardrail can never backprop into the student.
-        x = student_logits.detach()
+        logits = student_logits.detach()
+        parts = [logits]
         if student_features is not None:
             feat = F.interpolate(
                 student_features.detach(),
-                size=x.shape[-2:],
+                size=logits.shape[-2:],
                 mode="bilinear",
                 align_corners=False,
             )
-            x = torch.cat([x, feat], dim=1)
+            parts.append(feat)
+        if self.use_confidence_features:
+            energy = -torch.logsumexp(logits, dim=1, keepdim=True)
+            max_logit = logits.max(dim=1, keepdim=True).values
+            parts.extend([energy, max_logit])
+        x = torch.cat(parts, dim=1) if len(parts) > 1 else logits
 
         enc = self.encoder(x)
         pooled = self.pool(enc).flatten(1)

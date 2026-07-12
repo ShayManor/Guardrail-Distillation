@@ -305,6 +305,8 @@ def train_guardrail(
                     "val_loss": val_loss,
                     "supervision_type": cfg.supervision_type,
                     "use_student_features": bool(use_student_features),
+                    "use_confidence_features": bool(
+                        getattr(guardrail, "use_confidence_features", False)),
                     "dense_disagree_weight": cfg.dense_disagree_weight,
                     "dense_gap_weight": cfg.dense_gap_weight,
                     "seed": cfg.seed,

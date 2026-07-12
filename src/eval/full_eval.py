@@ -615,21 +615,29 @@ def build_guardrail_model(cfg: EvalConfig, checkpoint_path: Optional[str]) -> Op
     state = torch.load(checkpoint_path, map_location=cfg.device, weights_only=False)
     state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
     enc_weight = state_dict["encoder.0.weight"]
-    feat_ch = enc_weight.shape[1] - cfg.num_classes
 
     supervision_type = (
         state.get("supervision_type", "dense_multi") if isinstance(state, dict) else "dense_multi"
     )
+    use_confidence_features_ckpt = (
+        bool(state.get("use_confidence_features", False)) if isinstance(state, dict) else False
+    )
+    # The stored first-conv in_channels already include num_classes and (if on) the
+    # 2 confidence-feature channels; subtract both to recover feat_channels.
+    conf_ch = 2 if use_confidence_features_ckpt else 0
+    feat_ch = enc_weight.shape[1] - cfg.num_classes - conf_ch
     use_student_features_ckpt = (
         bool(state.get("use_student_features", feat_ch > 0))
         if isinstance(state, dict) else (feat_ch > 0)
     )
     print(
         f"[guardrail] feat_channels={feat_ch} supervision_type={supervision_type} "
-        f"use_student_features={use_student_features_ckpt}"
+        f"use_student_features={use_student_features_ckpt} "
+        f"use_confidence_features={use_confidence_features_ckpt}"
     )
 
-    model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch)
+    model = GuardrailPlusHead(num_classes=cfg.num_classes, feat_channels=feat_ch,
+                              use_confidence_features=use_confidence_features_ckpt)
     model.load_state_dict(state_dict)
     model = model.to(cfg.device).eval()
     # Stash metadata so per_image rows can self-describe.
@@ -756,6 +764,14 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         pass
 
     student = build_student_model(cfg, args.student_ckpt)
+    # Deep Ensemble members: extra independent students. The main student is member 0;
+    # predictive entropy of the mean softmax over all members is scored as 'deep_ensemble'.
+    ensemble_members = [
+        build_student_model(cfg, p.strip())
+        for p in (getattr(args, "ensemble_ckpts", "") or "").split(",") if p.strip()
+    ]
+    if ensemble_members:
+        print(f"[deep-ensemble] {len(ensemble_members) + 1} members (main + {len(ensemble_members)} extra)")
     teacher = build_teacher_model(cfg)
     guardrail = build_guardrail_model(cfg, args.guardrail_ckpt)
     guardrail_expects_feat = False
@@ -921,6 +937,24 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
 
         student_probs = F.softmax(student_logits, dim=1)
         temp_probs = F.softmax(temp_logits, dim=1)
+
+        # Deep Ensemble: mean softmax over the main student + extra members, then per-image
+        # predictive entropy over valid pixels (higher = more uncertain = defer first).
+        ens_entropies: Optional[List[float]] = None
+        if ensemble_members:
+            probs_list = [student_probs]
+            with torch.no_grad():
+                for m in ensemble_members:
+                    m_out = m(images)
+                    m_logits = m_out[0] if isinstance(m_out, tuple) else m_out
+                    probs_list.append(F.softmax(m_logits, dim=1))
+            ens_mean = torch.stack(probs_list, dim=0).mean(dim=0)
+            ens_pred_ent = -(ens_mean * (ens_mean + EPS).log()).sum(dim=1)
+            ens_entropies = []
+            for i in range(bsz):
+                valid = labels[i] != IGNORE_INDEX
+                ens_entropies.append(
+                    float(ens_pred_ent[i][valid].mean().item()) if int(valid.sum()) > 0 else 0.0)
         student_preds = student_logits.argmax(dim=1)
         teacher_preds = teacher_logits.argmax(dim=1) if teacher_logits is not None else None
 
@@ -1009,6 +1043,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 row["mc_mutual_info"] = float(mc_mutual_infos[i])
                 row["mc_dropout_latency_ms"] = float(mc_latency_per_img)
 
+            if ens_entropies is not None:
+                row["ensemble_entropy"] = float(ens_entropies[i])
+
             if guard_raw is not None and isinstance(guard_raw, dict):
                 if "disagree_logits" in guard_raw:
                     dl = guard_raw["disagree_logits"][i]
@@ -1020,6 +1057,13 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                         util_bce = float(dl_valid.mean().item())
                         row["guardrailpp_utility_dense_bce"] = util_bce
                         row["guardrailpp_keep_dense_bce"] = 1.0 - util_bce
+                        # Confident failures are spatially localized: a high
+                        # quantile of the per-pixel reliability map discriminates
+                        # them better than the mean. Additive columns only.
+                        row["guardrailpp_utility_dense_bce_q90"] = float(
+                            torch.quantile(dl_valid.float(), 0.90).item())
+                        row["guardrailpp_utility_dense_bce_q95"] = float(
+                            torch.quantile(dl_valid.float(), 0.95).item())
 
                 if "gap_pred" in guard_raw:
                     gp = guard_raw["gap_pred"][i]
@@ -1033,6 +1077,12 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                         util_gap = float(torch.sigmoid(torch.tensor(util_gap_raw)).item())
                         row["guardrailpp_utility_dense_gap"] = util_gap
                         row["guardrailpp_keep_dense_gap"] = 1.0 - util_gap
+                        # High-quantile pooling of the predicted gap map (see note
+                        # on the disagree head above). Additive columns only.
+                        row["guardrailpp_utility_dense_gap_q90"] = float(
+                            torch.sigmoid(torch.quantile(gp_valid.float(), 0.90)).item())
+                        row["guardrailpp_utility_dense_gap_q95"] = float(
+                            torch.sigmoid(torch.quantile(gp_valid.float(), 0.95)).item())
 
                 # Trained only under scalar_benefit; kept for the ablation row.
                 if "utility_score" in guard_raw:
@@ -1167,6 +1217,18 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         }
         class_rows.append(row_cls)
 
+    # Late-fusion selective score: rank-average of the learned guardrail head and
+    # the energy post-hoc score (both oriented so higher = more likely to fail).
+    # The two carry complementary signal — the fusion is the strongest selective
+    # score under domain shift. Added only when both components are available.
+    if "guardrail_risk" in df_img.columns and "energy_score" in df_img.columns:
+        def _rank(a):
+            a = np.asarray(a, dtype=float)
+            return np.argsort(np.argsort(a)).astype(float)
+        fusion_fail = _rank(df_img["guardrail_risk"].values) + _rank(df_img["energy_score"].values)
+        df_img["fusion_guard_energy_fail"] = fusion_fail
+        df_img["fusion_guard_energy_keep"] = -fusion_fail
+
     # Per-method "keep" scores: higher = more confident, kept first under coverage.
     score_keep_map: Dict[str, np.ndarray] = {
         "msp": df_img["student_msp"].values,
@@ -1177,12 +1239,16 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     }
     if "mc_entropy" in df_img.columns:
         score_keep_map["mc_dropout"] = -df_img["mc_entropy"].values
+    if "ensemble_entropy" in df_img.columns:
+        score_keep_map["deep_ensemble"] = -df_img["ensemble_entropy"].values
     if "guardrail_keep" in df_img.columns:
         score_keep_map["guardrail"] = df_img["guardrail_keep"].values
     if "guardrailpp_keep" in df_img.columns:
         score_keep_map["guardrailpp_keep"] = df_img["guardrailpp_keep"].values
     if "oracle_keep" in df_img.columns:
         score_keep_map["teacher_oracle"] = df_img["oracle_keep"].values
+    if "fusion_guard_energy_keep" in df_img.columns:
+        score_keep_map["fusion_guard_energy"] = df_img["fusion_guard_energy_keep"].values
     # True oracle ranks by realised quality — upper bound for any selective predictor.
     score_keep_map["oracle"] = df_img["student_miou"].values
 
@@ -1217,10 +1283,14 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     }
     if "mc_entropy" in df_img.columns:
         teacher_budget_methods["mc_dropout"] = df_img["mc_entropy"].values
+    if "ensemble_entropy" in df_img.columns:
+        teacher_budget_methods["deep_ensemble"] = df_img["ensemble_entropy"].values
     if "guardrail_risk" in df_img.columns:
         teacher_budget_methods["guardrail"] = df_img["guardrail_risk"].values
     if "guardrailpp_utility" in df_img.columns:
         teacher_budget_methods["guardrailpp_utility"] = df_img["guardrailpp_utility"].values
+    if "fusion_guard_energy_fail" in df_img.columns:
+        teacher_budget_methods["fusion_guard_energy"] = df_img["fusion_guard_energy_fail"].values
     if "oracle_fail" in df_img.columns:
         teacher_budget_methods["oracle"] = df_img["oracle_fail"].values
     teacher_budget_methods["random"] = np.random.RandomState(args.seed).rand(len(df_img))
@@ -1341,6 +1411,9 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
     if "mc_entropy" in df_fail.columns:
         df_fail["mc_dropout_fail_score"] = df_fail["mc_entropy"].astype(float)
         score_cols["mc_dropout"] = "mc_dropout_fail_score"
+    if "ensemble_entropy" in df_fail.columns:
+        df_fail["deep_ensemble_fail_score"] = df_fail["ensemble_entropy"].astype(float)
+        score_cols["deep_ensemble"] = "deep_ensemble_fail_score"
     # `guardrail_risk` is the alias to whichever head was actually trained.
     # The dense_{bce,gap} rows are also recorded so the CSV carries both
     # alongside the aliased "guardrail" row.
@@ -1350,6 +1423,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         score_cols["dense_bce"] = "guardrailpp_utility_dense_bce"
     if "guardrailpp_utility_dense_gap" in df_fail.columns:
         score_cols["dense_gap"] = "guardrailpp_utility_dense_gap"
+    if "fusion_guard_energy_fail" in df_fail.columns:
+        score_cols["fusion_guard_energy"] = "fusion_guard_energy_fail"
     if "oracle_fail" in df_fail.columns:
         score_cols["oracle"] = "oracle_fail"
 
@@ -1697,6 +1772,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--student-name", required=True, help="student_sup | student_kd | student_skd | ...")
     p_eval.add_argument("--student-backbone", required=True, help="e.g. nvidia/mit-b2")
     p_eval.add_argument("--student-ckpt", required=True)
+    p_eval.add_argument("--ensemble-ckpts", default="",
+        help="Comma-separated extra student checkpoints; with --student-ckpt they form a "
+             "Deep Ensemble whose mean-softmax predictive entropy is scored as 'deep_ensemble'.")
     p_eval.add_argument("--train-method", default="unknown", help="sup | kd | skd | finetune | ...")
     p_eval.add_argument("--teacher-backbone", default=None)
     p_eval.add_argument("--guardrail-ckpt", default=None)
