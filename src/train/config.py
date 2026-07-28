@@ -33,7 +33,7 @@ class Config:
     kd_temperature: float = 4.0
 
     # Stage 4. dense_multi is the paper headline; the rest are ablation rows.
-    # Modes: dense_multi | dense_disagree | dense_gap | gt_disagree | gt_risk | scalar_benefit
+    # Modes: dense_multi | dense_disagree | dense_gap | gt_disagree | gt_risk | gt_multi | scalar_benefit
     supervision_type: str = "dense_multi"
     dense_disagree_weight: float = 1.0
     dense_gap_weight: float = 1.0

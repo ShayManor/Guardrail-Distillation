@@ -1108,6 +1108,8 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     primary = scalar_val
                 elif sup_type == "dense_multi" and dense_gap_val is not None:
                     primary = dense_gap_val
+                elif sup_type == "gt_multi" and dense_gap_val is not None:
+                    primary = dense_gap_val
                 elif dense_gap_val is not None:
                     primary = dense_gap_val
                 elif dense_bce_val is not None:

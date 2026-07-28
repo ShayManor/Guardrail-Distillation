@@ -227,12 +227,12 @@ except Exception as exc:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Section 6 — GT-supervised baseline modes (gt_disagree, gt_risk)
+# Section 6 — GT-supervised baseline modes (gt_disagree, gt_risk, gt_multi)
 # ──────────────────────────────────────────────────────────────────────
 print("\n[6] GT-supervised baseline modes")
 
-# Loss + gradient tests for gt_disagree and gt_risk
-for st in ("gt_disagree", "gt_risk"):
+# Loss + gradient tests for gt_disagree, gt_risk and gt_multi
+for st in ("gt_disagree", "gt_risk", "gt_multi"):
     head_fresh = GuardrailPlusHead(num_classes=19, feat_channels=0)
     logits, _, _ = make_inputs(feat_ch=0)
     logits.requires_grad_(False)
@@ -258,6 +258,11 @@ for st in ("gt_disagree", "gt_risk"):
              gap_grad is not None and gap_grad.abs().sum() > 0)
         test(f"[{st}] disagree_head has NO grad (untrained)",
              disagree_grad is None or disagree_grad.abs().sum() == 0)
+    if st == "gt_multi":
+        test(f"[{st}] disagree_head has grad",
+             disagree_grad is not None and disagree_grad.abs().sum() > 0)
+        test(f"[{st}] gap_head has grad",
+             gap_grad is not None and gap_grad.abs().sum() > 0)
 
     test(f"[{st}] info contains loss key", "loss" in info)
 
@@ -320,6 +325,27 @@ try:
     loss2.backward()
     test("gt_risk e2e: loss is finite", torch.isfinite(loss2).item())
     test("gt_risk e2e: has dense_gap_loss", "dense_gap_loss" in info2)
+
+    # gt_multi targets — both GT heads, same targets as gt_disagree + gt_risk
+    tgt_gtm = _build_targets(student_logits, teacher_logits, labels,
+                             supervision_type="gt_multi")
+    test("gt_multi: disagree_target matches _gt_disagreement_map",
+         torch.allclose(tgt_gtm["disagree_target"], gt_dis))
+    test("gt_multi: gap_target matches _gt_risk_map",
+         torch.allclose(tgt_gtm["gap_target"], gt_risk))
+    test("gt_multi: targets are teacher-free",
+         torch.allclose(tgt_gtm["disagree_target"], tgt_gtd["disagree_target"])
+         and torch.allclose(tgt_gtm["gap_target"], tgt_gtr["gap_target"]))
+
+    # Full end-to-end step for gt_multi
+    head3 = GuardrailPlusHead(num_classes=C, feat_channels=0)
+    criterion3 = GuardrailPlusLoss(supervision_type="gt_multi")
+    preds3 = head3(student_logits)
+    loss3, info3 = criterion3(preds3, tgt_gtm)
+    loss3.backward()
+    test("gt_multi e2e: loss is finite", torch.isfinite(loss3).item())
+    test("gt_multi e2e: has both dense losses",
+         "dense_disagree_loss" in info3 and "dense_gap_loss" in info3)
 
 except Exception as exc:
     traceback.print_exc()

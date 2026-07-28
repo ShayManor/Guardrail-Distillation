@@ -3,7 +3,7 @@
 Primary supervision is per-pixel teacher/student disagreement (BCE) plus a
 per-pixel signed risk-gap regression (smooth-L1). The scalar image-level
 benefit head is wired in only as the negative-result baseline; the GT-target
-modes (gt_disagree, gt_risk) drop the teacher and use ground-truth labels.
+modes (gt_disagree, gt_risk, gt_multi) drop the teacher and use ground-truth labels.
 """
 
 import random
@@ -124,7 +124,7 @@ def _build_targets(student_logits, teacher_logits, labels, supervision_type="den
     """
     valid = (labels != IGNORE_INDEX).float()
 
-    if supervision_type in ("gt_disagree", "gt_risk"):
+    if supervision_type in ("gt_disagree", "gt_risk", "gt_multi"):
         gt_disagree_target, _ = _gt_disagreement_map(student_logits, labels)
         gt_risk_target, _ = _gt_risk_map(student_logits, labels)
         return {

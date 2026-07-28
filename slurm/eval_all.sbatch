@@ -26,6 +26,9 @@ export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 unset DISPLAY
 cd "$REPO"
 
+# Eval batch size. Lower it (EVAL_BS=2) to retry a combination that OOMed.
+EVAL_BS="${EVAL_BS:-4}"
+
 FAIL_LOG="$SCRATCH/logs/eval-all_${SLURM_JOB_ID:-local}_failures.log"
 : > "$FAIL_LOG"
 echo "[fail-log] $FAIL_LOG"
@@ -54,8 +57,11 @@ find_mit () {
 
 find_skd () {
   local bb="$1"
+  # Skip runs/mit-*_skd_de_* — deep-ensemble members (seeds 137/256) are only
+  # ever loaded via --ensemble-ckpts, never as the primary student the
+  # guardrail heads were trained against.
   ls -td runs/mit-${bb}_skd_*/student_skd.ckpt outputs*/student_skd.ckpt 2>/dev/null \
-    | head -1 | xargs -r dirname
+    | grep -v "_skd_de_" | head -1 | xargs -r dirname
 }
 
 # Discover every trained guardrail checkpoint on disk and dedupe by
@@ -73,7 +79,7 @@ mapfile -t JOBS < <(python3 - <<'PY'
 import os, re, glob
 pat = re.compile(
     r"^runs/mit-(?P<bb>b[012])_guard"
-    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit|gt_disagree|gt_risk))?"
+    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit|gt_disagree|gt_risk|gt_multi))?"
     r"(?:_s(?P<seed>\d+))?"
     r"_j(?P<jobid>\d+)$"
 )
@@ -168,7 +174,7 @@ run_one () {
       --guardrail-student-name student_skd \
       --mc-dropout-passes 4 \
       --output-dir "$EVAL_DIR" \
-      --batch-size 4 \
+      --batch-size "$EVAL_BS" \
       --num-workers 4 $FAST_FLAG
   elif [ "$DATASET" = "acdc" ]; then
     for DOMAIN in fog night rain snow all; do
@@ -191,7 +197,7 @@ run_one () {
         --guardrail-student-name student_skd \
         --mc-dropout-passes 4 \
         --output-dir "$EVAL_DIR" \
-        --batch-size 4 \
+        --batch-size "$EVAL_BS" \
         --num-workers 4 $FAST_FLAG
     done
   elif [ "$DATASET" = "idd" ]; then
@@ -217,7 +223,7 @@ run_one () {
       --guardrail-student-name student_skd \
       --mc-dropout-passes 4 \
       --output-dir "$EVAL_DIR" \
-      --batch-size 4 \
+      --batch-size "$EVAL_BS" \
       --num-workers 4 $FAST_FLAG
   else  # bdd
     if [ ! -d "$REPO/data/bdd100k/seg/images/val" ]; then
@@ -242,7 +248,7 @@ run_one () {
       --guardrail-student-name student_skd \
       --mc-dropout-passes 4 \
       --output-dir "$EVAL_DIR" \
-      --batch-size 4 \
+      --batch-size "$EVAL_BS" \
       --num-workers 4 $FAST_FLAG
   fi
 }
@@ -289,7 +295,7 @@ tables = ["runs","per_image","per_class","risk_coverage","teacher_budget",
 dir_re = re.compile(
     r"^paper_eval_(?P<dataset>city|acdc|idd|bdd)_(?P<backbone>b[012])_"
     r"mit-b[012]_guard"
-    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit|gt_disagree|gt_risk))?"
+    r"(?:_(?P<mode>dense_multi|dense_gap|dense_disagree|scalar_benefit|gt_disagree|gt_risk|gt_multi))?"
     r"(?:_s(?P<seed>\d+))?"
     r"_j(?P<jobid>\d+)$"
 )
