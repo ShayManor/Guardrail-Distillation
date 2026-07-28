@@ -25,7 +25,7 @@ FIGURES = [
     ("fig_per_condition_acdc",         "F7  — ACDC per-condition bars"),
     ("fig_latency",                    "F8  — latency ratios + absolute (all datasets)"),
     ("fig_supervision_ablation",       "F9  — E2 supervision-mode ablation (all datasets)"),
-    ("fig_negative_result_decomp",     "F10 — Var(benefit) decomposition (all datasets)"),
+    ("fig_negative_result_decomp",     "F10 — benefit unpredictability (all datasets)"),
     ("fig_acdc_shift_panels",          "F11-14 — ACDC shift panels (mIoU, conf-fail bars, rho, scatter)"),
     ("fig_cross_dataset_headline",     "F15 — cross-dataset headline: CF-AUROC + AURC delta"),
     ("fig_bdd_threshold_sweep",        "F16 — threshold sweep: BDD + IDD + ACDC"),

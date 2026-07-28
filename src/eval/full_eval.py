@@ -1147,6 +1147,12 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 disagreement_mask = pred[valid] != t_pred[valid]
                 confident_mask = pixel_max >= 0.90
                 cwt_mask = confident_mask & (~student_correct) & teacher_correct
+                both_correct_mask = student_correct & teacher_correct
+                both_wrong_mask = (~student_correct) & (~teacher_correct)
+                n_conf = int(confident_mask.sum().item())
+
+                def _conf_frac(mask):
+                    return float((confident_mask & mask).float().sum().item()) / n_conf if n_conf > 0 else 0.0
 
                 row.update({
                     "teacher_miou": teacher_miou,
@@ -1167,6 +1173,17 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                     "disagreement_rate": float(disagreement_mask.float().mean().item()),
                     "confident_wrong_teacher_right": float(cwt_mask.float().mean().item()) if int(confident_mask.sum()) > 0 else 0.0,
                     "n_confident_pixels": int(confident_mask.sum().item()),
+                    # Full teacher/student correctness 2x2 (mean per-image pixel fractions).
+                    # Overall (denominator = valid pixels); the other two quadrants are
+                    # teacher_gap (student wrong, teacher right) and student_better_gap
+                    # (student right, teacher wrong) above.
+                    "quad_both_correct": float(both_correct_mask.float().mean().item()),
+                    "quad_both_wrong": float(both_wrong_mask.float().mean().item()),
+                    # Conditioned on high-confidence pixels (denominator = confident pixels).
+                    "conf_quad_both_correct": _conf_frac(both_correct_mask),
+                    "conf_quad_student_wrong_teacher_right": _conf_frac(teacher_better_mask),
+                    "conf_quad_student_right_teacher_wrong": _conf_frac(student_better_mask),
+                    "conf_quad_both_wrong": _conf_frac(both_wrong_mask),
                 })
                 row["teacher_gain"] = row["teacher_benefit"]
 
