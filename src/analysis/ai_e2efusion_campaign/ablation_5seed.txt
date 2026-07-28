@@ -1,0 +1,4 @@
+ABLATION: guardrail dense_gap score, conf-fail AUROC@0.85, mean±std over 5 seeds (ACDC shift)
+               variant     b0     b1     b2  pooled(n)
+  baseline dense_multi  0.632  0.646  0.618  0.632±0.014 (n=15)
+ e2e-fusion (conffeat)  0.670  0.678  0.627  0.658±0.025 (n=15)

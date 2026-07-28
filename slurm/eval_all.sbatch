@@ -29,6 +29,10 @@ cd "$REPO"
 # Eval batch size. Lower it (EVAL_BS=2) to retry a combination that OOMed.
 EVAL_BS="${EVAL_BS:-4}"
 
+# Datasets to sweep. Narrow it (DATASETS=idd) to redo one after a re-stage,
+# which keeps FORCE_EVAL=1 from re-running every other dataset too.
+DATASETS="${DATASETS:-city acdc idd bdd}"
+
 FAIL_LOG="$SCRATCH/logs/eval-all_${SLURM_JOB_ID:-local}_failures.log"
 : > "$FAIL_LOG"
 echo "[fail-log] $FAIL_LOG"
@@ -255,10 +259,9 @@ run_one () {
 
 for J in "${JOBS[@]}"; do
   IFS='|' read -r BB MODE SEED DIR <<< "$J"
-  run_one city "$BB" "$MODE" "$SEED" "$DIR"
-  run_one acdc "$BB" "$MODE" "$SEED" "$DIR"
-  run_one idd  "$BB" "$MODE" "$SEED" "$DIR"
-  run_one bdd  "$BB" "$MODE" "$SEED" "$DIR"
+  for DS in $DATASETS; do
+    run_one "$DS" "$BB" "$MODE" "$SEED" "$DIR"
+  done
 done
 
 echo ""

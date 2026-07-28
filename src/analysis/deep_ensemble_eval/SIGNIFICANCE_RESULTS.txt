@@ -1,0 +1,39 @@
+=== VALIDATION: |repro - eval_csv| @0.85 ===
+  max abs err = 0.0000  worst=('b0', 'fog', 'max_logit', 0.521, 0.521)
+  -> FAITHFUL (proceed)
+
+================ CONFIDENT-FAILURE AUROC @ MSP>=0.85  (n=12 cells) ================
+  method          pooled_AUROC   95%CI
+   fusion          0.661        [0.620, 0.705]
+   energy          0.651        [0.611, 0.690]
+   max_logit       0.647        [0.607, 0.686]
+   guardrail       0.639        [0.594, 0.680]
+   deep_ensemble   0.617        [0.573, 0.663]
+   temp_msp        0.573        [0.528, 0.619]
+   mc_dropout      0.570        [0.524, 0.617]
+   msp             0.560        [0.513, 0.606]
+  paired  A vs B:  ΔAUROC   95%CI          boot_p   wilcoxon_p(12)  A_wins
+          fusion vs energy        +0.010  [-0.010,+0.030]  0.324   0.480          7/12
+       guardrail vs energy        -0.012  [-0.047,+0.024]  0.530   0.638          5/12
+       guardrail vs deep_ensemble +0.022  [-0.018,+0.060]  0.274   0.028          9/12
+          fusion vs deep_ensemble +0.043  [+0.007,+0.078]  0.014   0.008          10/12
+       guardrail vs temp_msp      +0.065  [+0.031,+0.102]  0.002   0.005          10/12
+   deep_ensemble vs temp_msp      +0.044  [+0.024,+0.066]  0.000   0.004          11/12
+
+================ CONFIDENT-FAILURE AUROC @ MSP>=0.9  (n=12 cells) ================
+  method          pooled_AUROC   95%CI
+   fusion          0.645        [0.599, 0.691]
+   energy          0.640        [0.597, 0.683]
+   max_logit       0.635        [0.590, 0.678]
+   guardrail       0.624        [0.574, 0.674]
+   deep_ensemble   0.575        [0.528, 0.629]
+   temp_msp        0.522        [0.474, 0.574]
+   mc_dropout      0.514        [0.465, 0.566]
+   msp             0.504        [0.455, 0.555]
+  paired  A vs B:  ΔAUROC   95%CI          boot_p   wilcoxon_p(12)  A_wins
+          fusion vs energy        +0.005  [-0.021,+0.032]  0.724   0.754          7/12
+       guardrail vs energy        -0.017  [-0.062,+0.026]  0.434   0.530          5/12
+       guardrail vs deep_ensemble +0.047  [-0.003,+0.094]  0.062   0.008          10/12
+          fusion vs deep_ensemble +0.069  [+0.029,+0.112]  0.000   0.010          10/12
+       guardrail vs temp_msp      +0.101  [+0.056,+0.145]  0.000   0.002          12/12
+   deep_ensemble vs temp_msp      +0.053  [+0.025,+0.081]  0.000   0.008          11/12

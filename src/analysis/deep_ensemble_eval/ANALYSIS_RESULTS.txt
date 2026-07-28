@@ -1,0 +1,99 @@
+===================== QUICK-WINS STATISTICAL ANALYSIS =====================
+Source: seed-42 ACDC DE evals (b0/b1/b2 x fog/night/rain/snow). Reproduction of
+full_eval confident-failure pipeline validated to max abs err 0.0000 vs eval CSVs.
+
+================ CONFIDENT-FAILURE AUROC @ MSP>=0.85  (n=12 cells) ================
+  method          pooled_AUROC   95%CI
+   fusion          0.661        [0.620, 0.705]
+   energy          0.651        [0.611, 0.690]
+   max_logit       0.647        [0.607, 0.686]
+   guardrail       0.639        [0.594, 0.680]
+   deep_ensemble   0.617        [0.573, 0.663]
+   temp_msp        0.573        [0.528, 0.619]
+   mc_dropout      0.570        [0.524, 0.617]
+   msp             0.560        [0.513, 0.606]
+  paired  A vs B:  ΔAUROC   95%CI          boot_p   wilcoxon_p(12)  A_wins
+          fusion vs energy        +0.010  [-0.010,+0.030]  0.324   0.480          7/12
+       guardrail vs energy        -0.012  [-0.047,+0.024]  0.530   0.638          5/12
+       guardrail vs deep_ensemble +0.022  [-0.018,+0.060]  0.274   0.028          9/12
+          fusion vs deep_ensemble +0.043  [+0.007,+0.078]  0.014   0.008          10/12
+       guardrail vs temp_msp      +0.065  [+0.031,+0.102]  0.002   0.005          10/12
+   deep_ensemble vs temp_msp      +0.044  [+0.024,+0.066]  0.000   0.004          11/12
+
+================ CONFIDENT-FAILURE AUROC @ MSP>=0.9  (n=12 cells) ================
+  method          pooled_AUROC   95%CI
+   fusion          0.645        [0.599, 0.691]
+   energy          0.640        [0.597, 0.683]
+   max_logit       0.635        [0.590, 0.678]
+   guardrail       0.624        [0.574, 0.674]
+   deep_ensemble   0.575        [0.528, 0.629]
+   temp_msp        0.522        [0.474, 0.574]
+   mc_dropout      0.514        [0.465, 0.566]
+   msp             0.504        [0.455, 0.555]
+  paired  A vs B:  ΔAUROC   95%CI          boot_p   wilcoxon_p(12)  A_wins
+          fusion vs energy        +0.005  [-0.021,+0.032]  0.724   0.754          7/12
+       guardrail vs energy        -0.017  [-0.062,+0.026]  0.434   0.530          5/12
+       guardrail vs deep_ensemble +0.047  [-0.003,+0.094]  0.062   0.008          10/12
+          fusion vs deep_ensemble +0.069  [+0.029,+0.112]  0.000   0.010          10/12
+       guardrail vs temp_msp      +0.101  [+0.056,+0.145]  0.000   0.002          12/12
+   deep_ensemble vs temp_msp      +0.053  [+0.025,+0.081]  0.000   0.008          11/12
+
+### OPTION 2 — AUROC vs MSP threshold (pooled 3bb x 4cond)
+thr   fusion energy guard  DeepEns temp  msp
+0.50  0.662 0.653 0.635 0.623 0.579 0.567
+0.70  0.662 0.653 0.635 0.623 0.579 0.567
+0.80  0.661 0.652 0.636 0.621 0.577 0.564
+0.85  0.661 0.651 0.639 0.617 0.573 0.560
+0.90  0.645 0.640 0.624 0.575 0.522 0.504
+0.95  0.590 0.629 0.522 0.534 0.390 0.370
+0.97  0.666 0.567 0.708 0.573 0.541 0.556
+
+### OPTION 5 — fusion weight sensitivity (AUROC@0.85; w=0 pure energy, w=1 pure guardrail)
+w      AUROC
+0.00   0.651
+0.25   0.660
+0.50   0.661
+0.75   0.654
+1.00   0.639
+
+### OPTION 3 — inference cost (mean latency ms/img, + effective forward passes)
+bb  student  guardrail(=stu+head)  teacher   | passes: MSP/energy/maxlogit=1x(free)  guardrail=1x+head  MCdrop=5x  DeepEns=3x  teacher=1x(big)
+b0    4.07     8.10                 13.52    | guardrail overhead vs student = +99%   teacher/student = 3.3x
+b1    5.31    13.32                 11.90    | guardrail overhead vs student = +151%   teacher/student = 2.2x
+b2    8.78    13.28                 11.80    | guardrail overhead vs student = +51%   teacher/student = 1.3x
+
+### OPTION 4 — AURC paired significance (Wilcoxon over 12 cells; lower=better)
+  method        mean_AURC
+   energy        0.6411
+   max_logit     0.6413
+   fusion        0.6420
+   guardrail     0.6454
+   deep_ensemble 0.6490
+   temp_msp      0.6532
+   msp           0.6537
+  paired A vs B (Δ=A-B, negative=A better):   Δ       wilcoxon_p   A_better_in
+          energy vs guardrail     -0.0044  0.136       7/12
+       guardrail vs deep_ensemble -0.0036  0.015       10/12
+          fusion vs energy        +0.0009  0.480       6/12
+       guardrail vs temp_msp      -0.0078  0.010       10/12
+   deep_ensemble vs temp_msp      -0.0042  0.028       9/12
+
+### OPTION 6 — Expected Calibration Error (pooled; lower=better calibrated)
+   guardrail      ECE=0.1092
+   temp_msp       ECE=0.5191
+   msp            ECE=0.5968
+
+===================== E2E-FUSION 5-SEED SIGNIFICANCE (the 'beats energy' claim) =====================
+conffeat runs: 15   baseline runs: 6
+paired (seed,bb) cells: 6
+
+### e2e-fusion (conf-features) vs energy — confident-failure AUROC@0.85, paired over 15 seed×bb
+  conffeat LEARNED score vs energy           Δ=+0.0090  wilcoxon_p=0.463  wins 4/6
+  conffeat FUSION(+energy) vs energy         Δ=+0.0177  wilcoxon_p=0.116  wins 4/6
+
+### MATCHED ABLATION — does adding energy/max-logit input channels help the learned score?
+  conffeat LEARNED vs baseline LEARNED       Δ=+0.0309  wilcoxon_p=0.046  wins 5/6
+
+### means (pooled over 15):
+  conffeat: learned=0.657  fusion=0.666  energy=0.648
+  baseline: learned=0.626  fusion=0.652  energy=0.648

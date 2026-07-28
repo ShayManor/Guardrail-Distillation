@@ -1,0 +1,37 @@
+available: {'bdd': ['b0', 'b1', 'b2'], 'idd': ['b0', 'b1', 'b2']}
+VALIDATION max abs err @0.85 = 0.0000  OK
+
+### Confident-failure AUROC @ MSP>=0.85  (n_conf, n_fail shown)
+dataset bb   fusion energy max_lo guardr deep_e mc_dro temp_m    msp
+bdd    b0   0.855 0.808 0.804 0.853 0.763 0.746 0.741 0.732   (nc=39,nf=7)
+bdd    b1   0.886 0.857 0.857 0.929 0.732 0.692 0.763 0.647   (nc=39,nf=7)
+bdd    b2   0.862 0.839 0.839 0.880 0.849 0.776 0.833 0.703   (nc=38,nf=6)
+idd    b0   0.744 0.724 0.724 0.742 0.724 0.778 0.749 0.760   (nc=40,nf=9)
+idd    b1   0.627 0.545 0.552 0.674 0.639 0.701 0.694 0.694   (nc=41,nf=9)
+idd    b2   0.688 0.660 0.660 0.712 0.688 0.764 0.764 0.757   (nc=41,nf=9)
+
+### Confident-failure AUROC @ MSP>=0.9  (n_conf, n_fail shown)
+dataset bb   fusion energy max_lo guardr deep_e mc_dro temp_m    msp
+bdd    b0   0.766 0.677 0.669 0.790 0.597 0.581 0.556 0.556   (nc=35,nf=4)
+bdd    b1   0.874 0.839 0.839 0.919 0.699 0.656 0.742 0.608   (nc=37,nf=6)
+bdd    b2   0.798 0.766 0.766 0.823 0.798 0.694 0.774 0.573   (nc=35,nf=4)
+idd    b0   0.716 0.690 0.690 0.726 0.690 0.750 0.718 0.730   (nc=39,nf=8)
+idd    b1   0.627 0.545 0.552 0.674 0.639 0.701 0.694 0.694   (nc=41,nf=9)
+idd    b2   0.688 0.660 0.660 0.712 0.688 0.764 0.764 0.757   (nc=41,nf=9)
+
+### AURC (lower=better)
+bdd b0: energy=0.595 guard=0.574 DE=0.586 fus=0.586 temp=0.610 msp=0.607
+bdd b1: energy=0.572 guard=0.540 DE=0.569 fus=0.559 temp=0.564 msp=0.575
+bdd b2: energy=0.515 guard=0.490 DE=0.492 fus=0.494 temp=0.498 msp=0.515
+idd b0: energy=0.662 guard=0.659 DE=0.660 fus=0.660 temp=0.660 msp=0.657
+idd b1: energy=0.640 guard=0.635 DE=0.638 fus=0.639 temp=0.636 msp=0.632
+idd b2: energy=0.605 guard=0.599 DE=0.597 fus=0.605 temp=0.589 msp=0.590
+
+=== 3-BACKBONE MEANS @0.85 (higher=better) ===
+ bdd: guard=0.887 fusio=0.868 energ=0.835 max_l=0.833 deep_=0.781 temp_=0.779 mc_dr=0.738 msp=0.694
+ idd: mc_dr=0.748 msp=0.737 temp_=0.736 guard=0.709 fusio=0.686 deep_=0.683 max_l=0.645 energ=0.643
+
+MSP-informativeness (MSP AUROC@0.85, mean 3bb) — high => failures already caught by confidence:
+  bdd: MSP=0.694
+  idd: MSP=0.737
+  acdc: MSP=0.560 (from ACDC eval)  => ACDC/BDD have confident failures MSP misses; IDD failures are already low-confidence

@@ -1,0 +1,16 @@
+
+=== ACDC (domain shift) : conf-fail AUROC @0.85, mean±std over 5 seeds ===
+                method     b0     b1     b2  pooled(n)
+  e2e-fusion (learned)  0.670  0.678  0.627  0.658±0.025 (n=15)
+                energy  0.640  0.659  0.651  0.650±0.008 (n=15)
+   e2e-fusion + energy  0.665  0.683  0.654  0.667±0.014 (n=15)
+          temp-scaling  0.550  0.612  0.560  0.574±0.027 (n=15)
+                   MSP  0.546  0.595  0.546  0.562±0.023 (n=15)
+
+=== Cityscapes val (IN-DOMAIN) : conf-fail AUROC @0.85, mean±std over 5 seeds ===
+                method     b0     b1     b2  pooled(n)
+  e2e-fusion (learned)  0.601  0.612  0.560  0.591±0.024 (n=15)
+                energy  0.639  0.659  0.556  0.618±0.044 (n=15)
+   e2e-fusion + energy  0.627  0.648  0.565  0.613±0.036 (n=15)
+          temp-scaling  0.572  0.571  0.555  0.566±0.008 (n=15)
+                   MSP  0.571  0.579  0.564  0.571±0.006 (n=15)

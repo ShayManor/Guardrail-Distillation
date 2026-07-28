@@ -1,0 +1,15 @@
+AURC (area under risk-coverage, LOWER=better) — ACDC shift, mean±std over 15 runs (5seed×3bb):
+              oracle: 0.5531 ± 0.0377
+              Energy: 0.5935 ± 0.0346
+   e2e-fusion+energy: 0.5946 ± 0.0345
+          e2e-fusion: 0.6016 ± 0.0341
+        Temp-scaling: 0.6265 ± 0.0357
+                 MSP: 0.6380 ± 0.0367
+
+Selective risk @ coverage=0.80 (lower=better):
+              oracle: 0.6177
+   e2e-fusion+energy: 0.6260
+          e2e-fusion: 0.6272
+              Energy: 0.6275
+        Temp-scaling: 0.6355
+                 MSP: 0.6371

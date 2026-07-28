@@ -210,3 +210,33 @@ __marimo__/
 /report.md
 /FINDINGS_REPORT.md
 /ai_campaign_checkpoints/
+
+# Agent-facing working docs (only README.md is ever committed)
+/CLAUDE.md
+/PAPER_PLAN.md
+/.claude/
+/src/analysis/*.md
+
+# IDE
+/.idea/
+
+# Staged checkpoints (fetch with scripts/fetch_checkpoints.sh)
+/checkpoints.zip
+/checkpoints/
+/mit-b0/
+/mit-b1/
+/mit-b2/
+
+# Oversized eval dumps (>100 MiB blob limit / regenerable backups)
+/src/analysis/combined_all/.fp32_backup/
+
+# Paper working draft + LaTeX build artifacts
+/paper/main.tex
+/paper/main.pdf
+/paper/guardrail_changes.*
+/paper/--*.png
+/paper/new_paper.pdf
+*.aux
+*.bbl
+*.blg
+*.out
