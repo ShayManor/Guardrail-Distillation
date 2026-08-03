@@ -64,6 +64,7 @@ for DOMAIN in fog night rain snow all; do
     --guardrail-ckpt "$GUARDRAIL_CKPT" \
     --guardrail-student-name student_skd \
     --mc-dropout-passes 4 \
+    --fdbd-fit-path "$REPO/data/cityscapes" \
     --output-dir "$EVAL_DIR" \
     --batch-size 4 \
     --num-workers 8
