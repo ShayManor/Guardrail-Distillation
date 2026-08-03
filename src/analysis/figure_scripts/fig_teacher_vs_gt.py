@@ -45,8 +45,13 @@ POSTHOC = [
     ("Entropy",    "student_entropy", True),
     ("MaxLogit",   "max_logit",       False),
     ("Energy",     "energy_score",    True),
+    ("fDBD",       "fdbd_score",      False),
     ("MC-Dropout", "mc_entropy",      True),
 ]
+
+# fDBD depends only on the frozen student, so it is stored once per image
+# rather than per supervision run; combined_all predates the column.
+FDBD_FILE = "fdbd_eval/fdbd_scores_b1.csv"
 
 # Deep Ensemble lives outside combined_all — it is its own eval campaign and
 # combined_all/per_image.csv has no ensemble_entropy column. One three-member
@@ -59,7 +64,7 @@ DEEP_ENSEMBLE_FILES = {
 
 # Display order
 ALL_METHODS = [
-    "MSP", "Entropy", "MaxLogit", "Energy", "MC-Dropout", "DeepEns (3×)",
+    "MSP", "Entropy", "MaxLogit", "Energy", "fDBD", "MC-Dropout", "DeepEns (3×)",
     "GT-Dis", "GT-Gap",
     "T-Multi (ours)",
 ]
@@ -69,6 +74,7 @@ COLORS = {
     "Entropy":        "#DD8452",
     "MaxLogit":       "#64B5CD",
     "Energy":         "#4C72B0",
+    "fDBD":           "#DA8BC3",
     "MC-Dropout":     "#C44E52",
     "DeepEns (3×)":   "#937860",
     "GT-Dis":         "#55A868",
@@ -152,6 +158,9 @@ def main():
     apply_style()
     pi = load_table("per_image")
     pi = pool_acdc_domain(pi)
+    fdbd_path = ANALYSIS_ROOT / FDBD_FILE
+    if fdbd_path.is_file() and "fdbd_score" not in pi.columns:
+        pi = pi.merge(pd.read_csv(fdbd_path), on=["dataset", "image_id"], how="left")
     pi = pi[pi["backbone"] == "b1"].copy()
 
     present = set(available_datasets(pi))

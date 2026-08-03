@@ -42,9 +42,9 @@ MUTED = "#6f7378"
 
 PANELS = Path(__file__).resolve().parent / "assets" / "arch_panels.npz"
 
-FIGSIZE = (11.5, 14.3)
+FIGSIZE = (11.5, 15.9)
 XLIM = 100.0
-YLIMS = (20.0, 34.0, 16.0, 21.0)
+YLIMS = (20.0, 44.0, 16.0, 21.0)
 
 CMAP_D = LinearSegmentedColormap.from_list("d", ["#f6f4fa", "#5c4a86"])
 CMAP_R = LinearSegmentedColormap.from_list("r", ["#fff6ee", "#a8331f"])
@@ -104,7 +104,8 @@ def txt(ax, x, y, s, *, size=10, weight="normal", color=BLK, ha="center"):
 def img(ax, arr, x0, y0, x1, y1, *, cmap=None, lw=1.1, ec=BLK):
     kw = {}
     if cmap is not None:
-        lo, hi = np.percentile(arr, (50, 98))
+        # nan-aware: the dense targets carry NaN at ignored pixels.
+        lo, hi = np.nanpercentile(arr, (50, 98))
         kw = dict(vmin=lo, vmax=hi)
     ax.imshow(arr, extent=[x0, x1, y0, y1], aspect="auto", cmap=cmap, zorder=3,
               interpolation="bilinear", **kw)
@@ -167,70 +168,79 @@ def draw_architecture(ax, sq, data):
 # ------------------------------------------------------------------- training
 def draw_training(ax, sq, data):
     ix0, ix1 = sq(6.0, 8.0)
-    img(ax, data["rgb"], ix0, 13.0, ix1, 21.0)
+    img(ax, data["rgb"], ix0, 23.0, ix1, 31.0)
 
-    sx1 = module(ax, 14.0, 27.0, STUDENT_LAYERS, bw=2.0, gap=1.0, bh=9.0,
+    sx1 = module(ax, 14.0, 37.0, STUDENT_LAYERS, bw=2.0, gap=1.0, bh=9.0,
                  pad=0.45, lab=7.0)
-    txt(ax, (14.0 + sx1) / 2, 33.2, "Student", size=11, weight="bold")
+    txt(ax, (14.0 + sx1) / 2, 43.2, "Student", size=11, weight="bold")
 
-    rect(ax, 14.0, 13.0, sx1, 21.0, fc=GREY_FILL)
-    txt(ax, (14.0 + sx1) / 2, 18.0, "Teacher", size=11, weight="bold")
-    txt(ax, (14.0 + sx1) / 2, 15.6, "SegFormer-B5", size=8.5, color="#3d4045")
+    rect(ax, 14.0, 23.0, sx1, 31.0, fc=GREY_FILL)
+    txt(ax, (14.0 + sx1) / 2, 28.0, "Teacher", size=11, weight="bold")
+    txt(ax, (14.0 + sx1) / 2, 25.6, "SegFormer-B5", size=8.5, color="#3d4045")
 
-    chip(ax, (14.0 + sx1) / 2, 5.5, "labels   $y$", w=sx1 - 14.0, h=4.0)
+    chip(ax, (14.0 + sx1) / 2, 9.0, "labels   $y$", w=sx1 - 14.0, h=4.0)
 
-    arrow(ax, (ix1, 17.6), (14.0, 25.0))
-    arrow(ax, (ix1, 17.0), (14.0, 17.0))
+    arrow(ax, (ix1, 27.6), (14.0, 35.0))
+    arrow(ax, (ix1, 27.0), (14.0, 27.0))
 
-    chip(ax, 33.5, 27.0, "$z^{S}$", w=5.6, h=3.2)
-    chip(ax, 33.5, 17.0, "$z^{T}$", w=5.6, h=3.2)
+    chip(ax, 33.5, 37.0, "$z^{S}$", w=5.6, h=3.2)
+    chip(ax, 33.5, 27.0, "$z^{T}$", w=5.6, h=3.2)
+    arrow(ax, (sx1, 37.0), (30.7, 37.0))
     arrow(ax, (sx1, 27.0), (30.7, 27.0))
-    arrow(ax, (sx1, 17.0), (30.7, 17.0))
 
-    gx1 = module(ax, 41.0, 27.0, GUARD_LAYERS, bw=2.6, gap=1.5, bh=9.0,
+    gx1 = module(ax, 41.0, 37.0, GUARD_LAYERS, bw=2.6, gap=1.5, bh=9.0,
                  pad=0.45, lab=7.0)
-    txt(ax, (41.0 + gx1) / 2, 33.2, "Guardrail", size=11, weight="bold")
-    arrow(ax, (36.3, 27.0), (41.0, 27.0))
+    txt(ax, (41.0 + gx1) / 2, 43.2, "Guardrail", size=11, weight="bold")
+    arrow(ax, (36.3, 37.0), (41.0, 37.0))
 
     # every target needs the student; the teacher and the labels supply the
     # reference, so all three feed both target blocks
-    ax.plot([37.5, 37.5], [27.0, 5.5], color=BLK, lw=1.0, zorder=4,
+    ax.plot([37.5, 37.5], [37.0, 9.0], color=BLK, lw=1.0, zorder=4,
             solid_capstyle="round")
-    ax.plot([36.3, 37.5], [17.0, 17.0], color=BLK, lw=1.0, zorder=4)
-    ax.plot([sx1, 37.5], [5.5, 5.5], color=BLK, lw=1.0, zorder=4)
-    arrow(ax, (37.5, 17.0), (40.0, 17.0), lw=1.0)
-    arrow(ax, (37.5, 5.0), (40.0, 5.0), lw=1.0)
+    ax.plot([36.3, 37.5], [27.0, 27.0], color=BLK, lw=1.0, zorder=4)
+    ax.plot([sx1, 37.5], [9.0, 9.0], color=BLK, lw=1.0, zorder=4)
+    arrow(ax, (37.5, 25.5), (40.0, 25.5), lw=1.0)
+    arrow(ax, (37.5, 8.5), (40.0, 8.5), lw=1.0)
 
+    # Each target row carries the map it produces for this frame, so the
+    # supervision the guardrail actually receives is visible, not just named.
     lanes = [
-        (21.0, 13.0, "disagreement target",
-         r"$\mathbf{1}[\,\hat y^{S}_{ij}\neq\hat y^{T}_{ij}\,]$",
-         r"$\mathbf{1}[\,\hat y^{S}_{ij}\neq y_{ij}\,]$"),
-        (9.0, 1.0, "severity target",
-         r"$\mathrm{CE}(z^{S}_{ij},y_{ij})-\mathrm{CE}(z^{T}_{ij},y_{ij})$",
-         r"$\mathrm{CE}(z^{S}_{ij},\,y_{ij})$"),
+        (32.0, 19.0, "disagreement target", CMAP_D,
+         (r"$\mathbf{1}[\,\hat y^{S}_{ij}\neq\hat y^{T}_{ij}\,]$", "d_t"),
+         (r"$\mathbf{1}[\,\hat y^{S}_{ij}\neq y_{ij}\,]$", "d_gt")),
+        (15.0, 2.0, "severity target", CMAP_R,
+         (r"$\mathrm{CE}(z^{S}_{ij},y_{ij})-\mathrm{CE}(z^{T}_{ij},y_{ij})$", "s_t"),
+         (r"$\mathrm{CE}(z^{S}_{ij},\,y_{ij})$", "s_gt")),
     ]
-    for y1, y0, title, t_expr, l_expr in lanes:
-        rect(ax, 40.0, y0, 72.0, y1)
-        txt(ax, 56.0, y1 - 1.4, title, size=9, weight="bold", color=MUTED)
-        txt(ax, 42.5, y1 - 4.1, "teacher", size=8.5, color=MUTED, ha="left")
-        txt(ax, 58.5, y1 - 4.1, t_expr, size=9.5)
-        txt(ax, 42.5, y1 - 6.9, "labels", size=8.5, color=MUTED, ha="left")
-        txt(ax, 58.5, y1 - 6.9, l_expr, size=9.5)
+    for y1, y0, title, cmap, t_row, l_row in lanes:
+        rect(ax, 40.0, y0, 74.0, y1)
+        txt(ax, 57.0, y1 - 1.6, title, size=9, weight="bold", color=MUTED)
+        for (expr, key), lab, cy in ((t_row, "teacher", y1 - 5.0),
+                                     (l_row, "labels", y1 - 9.8)):
+            txt(ax, 42.0, cy, lab, size=8.5, color=MUTED, ha="left")
+            txt(ax, 56.0, cy, expr, size=9.5)
+            if key in data:
+                mx0, mx1 = sq(70.0, 4.4)
+                img(ax, data[key], mx0, cy - 2.2, mx1, cy + 2.2, cmap=cmap,
+                    lw=0.8)
 
     # each loss takes its target from the left and its prediction from above
-    chip(ax, 87.0, 23.5, r"$\hat d$", w=6.0, h=3.0, fc="#e6e1f0")
-    chip(ax, 87.0, 11.0, r"$\hat s$", w=6.0, h=3.0, fc="#f7e3dd")
-    rect(ax, 79.0, 13.7, 95.0, 20.3, fc=ORANGE)
-    txt(ax, 87.0, 17.0, r"$\mathcal{L}_{\mathrm{BCE}}$", size=12)
-    rect(ax, 79.0, 1.7, 95.0, 8.3, fc=ORANGE)
-    txt(ax, 87.0, 5.0, r"$\mathcal{L}_{\mathrm{smooth}\text{-}\ell_1}$", size=12)
+    chip(ax, 87.0, 32.0, r"$\hat d$", w=6.0, h=3.0, fc="#e6e1f0")
+    chip(ax, 87.0, 15.0, r"$\hat s$", w=6.0, h=3.0, fc="#f7e3dd")
+    for key, cy, cmap, ec in (("d", 32.0, CMAP_D, C_DIS), ("r", 15.0, CMAP_R, C_RISK)):
+        px0, px1 = sq(92.8, 4.4)
+        img(ax, data[key], px0, cy - 2.2, px1, cy + 2.2, cmap=cmap, lw=1.0, ec=ec)
+    rect(ax, 79.0, 22.2, 95.0, 28.8, fc=ORANGE)
+    txt(ax, 87.0, 25.5, r"$\mathcal{L}_{\mathrm{BCE}}$", size=12)
+    rect(ax, 79.0, 5.2, 95.0, 11.8, fc=ORANGE)
+    txt(ax, 87.0, 8.5, r"$\mathcal{L}_{\mathrm{smooth}\text{-}\ell_1}$", size=12)
 
-    arrow(ax, (72.0, 17.0), (79.0, 17.0), lw=1.2)
-    arrow(ax, (72.0, 5.0), (79.0, 5.0), lw=1.2)
-    elbow(ax, [(gx1, 28.4), (87.0, 28.4), (87.0, 25.0)], lw=1.2)
-    arrow(ax, (87.0, 22.0), (87.0, 20.3), lw=1.2)
-    elbow(ax, [(gx1, 25.6), (75.5, 25.6), (75.5, 11.0), (84.0, 11.0)], lw=1.2)
-    arrow(ax, (87.0, 9.5), (87.0, 8.3), lw=1.2)
+    arrow(ax, (74.0, 25.5), (79.0, 25.5), lw=1.2)
+    arrow(ax, (74.0, 8.5), (79.0, 8.5), lw=1.2)
+    elbow(ax, [(gx1, 38.4), (87.0, 38.4), (87.0, 33.5)], lw=1.2)
+    arrow(ax, (87.0, 30.5), (87.0, 28.8), lw=1.2)
+    elbow(ax, [(gx1, 35.6), (75.5, 35.6), (75.5, 15.0), (84.0, 15.0)], lw=1.2)
+    arrow(ax, (87.0, 13.5), (87.0, 11.8), lw=1.2)
 
 
 # --------------------------------------------------------------------- test time

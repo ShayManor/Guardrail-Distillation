@@ -38,6 +38,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--image", required=True, type=Path)
     p.add_argument("--student", required=True, type=Path)
     p.add_argument("--guardrail", required=True, type=Path)
+    p.add_argument("--label", type=Path,
+                   help="*_gt_labelTrainIds.png; enables the four target maps")
+    p.add_argument("--teacher", default=None,
+                   help="teacher backbone dir; enables the teacher-derived targets")
     p.add_argument("--output", type=Path,
                    default=REPO / "src/analysis/figure_scripts/assets/arch_panels.npz")
     p.add_argument("--backbone", default="nvidia/mit-b1",
@@ -81,11 +85,40 @@ def main() -> None:
         e = (-torch.logsumexp(logits[0], dim=0)).cpu().numpy()
 
     half = lambda a: a.reshape(256, 2, 256, 2).mean(axis=(1, 3)).astype(np.float32)
+    extra = {}
+    if args.label is not None:
+        # The same four dense targets train_guardrail.py builds, so the figure
+        # shows the actual supervision this frame contributes. Ignored pixels
+        # are NaN and drop out of the colour scale.
+        import torch.nn.functional as F
+        lbl = TF.resize(Image.open(args.label), [512, 512],
+                        interpolation=TF.InterpolationMode.NEAREST)
+        y = torch.from_numpy(np.asarray(lbl, np.uint8).astype(np.int64))
+        y = y.unsqueeze(0).to(args.device)
+        valid = y != 255
+        y_safe = torch.where(valid, y, torch.zeros_like(y))
+        nan = lambda t: np.where(valid[0].cpu().numpy(),
+                                 t[0].cpu().numpy(), np.nan).astype(np.float32)
+        with torch.no_grad():
+            ce_s = F.cross_entropy(logits, y_safe, reduction="none")
+            extra["d_gt"] = half(nan((logits.argmax(1) != y).float()))
+            extra["s_gt"] = half(nan(ce_s))
+            if args.teacher:
+                cfg.teacher_backbone = args.teacher
+                from src.eval.full_eval import build_teacher_model
+                teacher = build_teacher_model(cfg)
+                z_t = teacher(x)
+                ce_t = F.cross_entropy(z_t, y_safe, reduction="none")
+                extra["d_t"] = half(nan((logits.argmax(1) != z_t.argmax(1)).float()))
+                extra["s_t"] = half(nan(ce_s - ce_t))
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, rgb=np.asarray(resized, np.uint8)[::2, ::2],
-                        d=half(d), r=half(r), e=half(e))
+                        d=half(d), r=half(r), e=half(e), **extra)
     print(f"[done] {args.output}  d=[{d.min():.3f},{d.max():.3f}] "
-          f"r=[{r.min():.3f},{r.max():.3f}] e=[{e.min():.3f},{e.max():.3f}]")
+          f"r=[{r.min():.3f},{r.max():.3f}] e=[{e.min():.3f},{e.max():.3f}]"
+          + "".join(f" {k}=[{np.nanmin(v):.3f},{np.nanmax(v):.3f}]"
+                    for k, v in extra.items()))
 
 
 if __name__ == "__main__":
