@@ -596,6 +596,130 @@ def build_student_model(cfg: EvalConfig, checkpoint_path: str) -> nn.Module:
     return ForwardAdapter(wrapped).to(cfg.device).eval()
 
 
+# ── Feature-space post-hoc OOD baselines (SCALE, fDBD) ───────────────────────
+# Both read the SegFormer decode head as a per-pixel linear classifier on the
+# penultimate (post-ReLU) feature map, so they need the classifier input rather
+# than the upsampled logits that MSP/energy/max-logit use.
+#   SCALE  Xu et al., ICLR 2024 — percentile activation rescaling, then energy.
+#   fDBD   Liu & Qin, ICML 2024 — mean distance to the one-vs-rest decision
+#          boundaries, normalised by distance from the train-feature mean.
+
+
+class PenultimateTap:
+    """Forward hook that captures the input to the segmentation classifier."""
+
+    def __init__(self, model: nn.Module):
+        self.classifier = self._find_classifier(model)
+        self.feat: Optional[torch.Tensor] = None
+        self._handle = self.classifier.register_forward_hook(self._hook)
+
+    @staticmethod
+    def _find_classifier(model: nn.Module) -> nn.Conv2d:
+        for name, module in model.named_modules():
+            if name.endswith("decode_head.classifier") and isinstance(module, nn.Conv2d):
+                return module
+        raise RuntimeError("no decode_head.classifier on student; cannot run SCALE/fDBD")
+
+    def _hook(self, _module, inputs, _output):
+        self.feat = inputs[0].detach()
+
+    @property
+    def weight(self) -> torch.Tensor:
+        return self.classifier.weight.detach().flatten(1)  # [C, D]
+
+    @property
+    def bias(self) -> torch.Tensor:
+        b = self.classifier.bias
+        if b is None:
+            return torch.zeros(self.weight.shape[0], device=self.weight.device)
+        return b.detach()
+
+    def close(self) -> None:
+        self._handle.remove()
+
+
+def scale_energy_map(feat: torch.Tensor, W: torch.Tensor, b: torch.Tensor,
+                     percentile: float = 85.0) -> torch.Tensor:
+    """Per-pixel SCALE score, oriented as energy (higher = more likely to fail).
+
+    feat is [B, D, h, w] post-ReLU activations; the scaling factor exp(s1/s2) is
+    computed per pixel over the channel dimension, matching SCALE's per-sample
+    rule applied to the per-pixel classifier.
+    """
+    B, D, h, w = feat.shape
+    x = feat.permute(0, 2, 3, 1).reshape(-1, D).float()
+    k = max(1, D - int(round(D * float(percentile) / 100.0)))
+    s1 = x.sum(dim=1)
+    s2 = x.topk(k, dim=1).values.sum(dim=1).clamp_min(EPS)
+    x = x * torch.exp(s1 / s2).unsqueeze(1)
+    logits = x @ W.t().float() + b.float()
+    return (-torch.logsumexp(logits, dim=1)).view(B, h, w)
+
+
+def fdbd_map(feat: torch.Tensor, W: torch.Tensor, b: torch.Tensor,
+             mu: torch.Tensor, pair_norm: torch.Tensor) -> torch.Tensor:
+    """Per-pixel fDBD score (higher = more in-distribution)."""
+    B, D, h, w = feat.shape
+    x = feat.permute(0, 2, 3, 1).reshape(-1, D).float()
+    logits = x @ W.t().float() + b.float()
+    pred = logits.argmax(dim=1, keepdim=True)
+    gap = (logits.gather(1, pred) - logits).abs()
+    dist = gap / pair_norm[pred.squeeze(1)]
+    dist = dist.scatter(1, pred, 0.0)
+    n_other = max(logits.shape[1] - 1, 1)
+    resid = (x - mu.float()).norm(dim=1).clamp_min(EPS)
+    return ((dist.sum(dim=1) / n_other) / resid).view(B, h, w)
+
+
+def classifier_pair_norms(W: torch.Tensor) -> torch.Tensor:
+    """||w_i - w_j|| for every class pair; diagonal set to 1 to stay finite."""
+    pn = torch.cdist(W.float(), W.float())
+    pn.fill_diagonal_(1.0)
+    return pn.clamp_min(EPS)
+
+
+def fit_feature_mean(student: nn.Module, tap: PenultimateTap, cfg: EvalConfig,
+                     fit_path: str, max_images: int, cache_path: Path) -> torch.Tensor:
+    """Mean penultimate feature over Cityscapes train pixels (cached to disk)."""
+    if cache_path.exists():
+        mu = torch.from_numpy(np.load(cache_path))
+        print(f"[fdbd] loaded train-feature mean from {cache_path}")
+        return mu.to(cfg.device)
+
+    from src.train.data import CityscapesDataset
+
+    # The train split random-crops, so pin the RNG to keep the mean reproducible.
+    torch.manual_seed(0)
+    ds = CityscapesDataset(fit_path, "train", 512)
+    loader = torch.utils.data.DataLoader(
+        ds, batch_size=cfg.batch_size, shuffle=False,
+        num_workers=cfg.num_workers, pin_memory=True,
+    )
+    total = None
+    count = 0
+    seen = 0
+    with torch.inference_mode():
+        for batch in loader:
+            if seen >= max_images:
+                break
+            images = batch[0] if isinstance(batch, (list, tuple)) else batch["image"]
+            images = images.to(cfg.device)
+            _ = student(images)
+            f = tap.feat.float()
+            s = f.sum(dim=(0, 2, 3))
+            total = s if total is None else total + s
+            count += int(f.shape[0] * f.shape[2] * f.shape[3])
+            seen += int(images.shape[0])
+    if total is None:
+        raise RuntimeError(f"no Cityscapes train images found under {fit_path}")
+    # Round-trip through numpy so the result is not an inference tensor.
+    mu = torch.from_numpy((total / count).cpu().numpy().copy())
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cache_path, mu.numpy())
+    print(f"[fdbd] fitted train-feature mean on {seen} images -> {cache_path}")
+    return mu.to(cfg.device)
+
+
 def build_teacher_model(cfg: EvalConfig) -> Optional[nn.Module]:
     if not cfg.teacher_backbone:
         return None
@@ -780,6 +904,27 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         enc_w = state["model"]["encoder.0.weight"] if "model" in state else state["encoder.0.weight"]
         guardrail_expects_feat = (enc_w.shape[1] > cfg.num_classes)
 
+    # SCALE / fDBD tap. fDBD needs a train-feature mean; without --fdbd-fit-path
+    # (or a cached .npy) only SCALE is scored.
+    ood_tap: Optional[PenultimateTap] = None
+    ood_mu: Optional[torch.Tensor] = None
+    ood_pair_norm: Optional[torch.Tensor] = None
+    if not args.no_feature_ood:
+        try:
+            ood_tap = PenultimateTap(student)
+            ood_pair_norm = classifier_pair_norms(ood_tap.weight)
+            mu_path = Path(args.fdbd_mu_path) if args.fdbd_mu_path else (
+                Path(args.student_ckpt).parent / "fdbd_train_feature_mean.npy")
+            if mu_path.exists() or args.fdbd_fit_path:
+                ood_mu = fit_feature_mean(
+                    student, ood_tap, cfg, args.fdbd_fit_path,
+                    int(args.fdbd_fit_images), mu_path)
+            else:
+                print("[fdbd] no train-feature mean available; scoring SCALE only")
+        except RuntimeError as exc:
+            print(f"[posthoc-ood] disabled: {exc}")
+            ood_tap = None
+
     student_params = count_parameters(student)
     teacher_params = count_parameters(teacher) if teacher is not None else 0
     guardrail_params = count_parameters(guardrail) if guardrail is not None else 0
@@ -875,6 +1020,21 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
             student_logits = out
             student_feat = None
         student_ms_img = t_student.ms / max(bsz, 1)
+
+        # SCALE / fDBD run on the decode-head grid; the score maps are upsampled
+        # so the per-image pool uses the same valid mask as every other score.
+        # Read before the MC-dropout / ensemble passes overwrite the tap.
+        scale_map = None
+        fdbd_score_map = None
+        if ood_tap is not None and ood_tap.feat is not None:
+            _oW, _ob = ood_tap.weight, ood_tap.bias
+            scale_map = scale_energy_map(ood_tap.feat, _oW, _ob, args.scale_percentile)
+            scale_map = F.interpolate(scale_map.unsqueeze(1), size=labels.shape[-2:],
+                                      mode="bilinear", align_corners=False).squeeze(1)
+            if ood_mu is not None:
+                fdbd_score_map = fdbd_map(ood_tap.feat, _oW, _ob, ood_mu, ood_pair_norm)
+                fdbd_score_map = F.interpolate(fdbd_score_map.unsqueeze(1), size=labels.shape[-2:],
+                                               mode="bilinear", align_corners=False).squeeze(1)
 
         # Temperature-scaled logits — used only for confidence baselines, not predictions.
         temp_logits = student_logits / max(args.temperature, EPS)
@@ -1037,6 +1197,11 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
                 "student_risk_dynamic": student_risk_dynamic,
                 "n_dynamic_pixels": n_dynamic,
             }
+
+            if scale_map is not None:
+                row["scale_energy"] = float(scale_map[i][valid].mean().item())
+            if fdbd_score_map is not None:
+                row["fdbd_score"] = float(fdbd_score_map[i][valid].mean().item())
 
             if mc_entropies is not None and mc_mutual_infos is not None:
                 row["mc_entropy"] = float(mc_entropies[i])
@@ -1256,6 +1421,10 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "neg_energy": (-df_img["energy_score"].values),
         "max_logit": df_img["max_logit"].values,
     }
+    if "scale_energy" in df_img.columns:
+        score_keep_map["scale"] = -df_img["scale_energy"].values
+    if "fdbd_score" in df_img.columns:
+        score_keep_map["fdbd"] = df_img["fdbd_score"].values
     if "mc_entropy" in df_img.columns:
         score_keep_map["mc_dropout"] = -df_img["mc_entropy"].values
     if "ensemble_entropy" in df_img.columns:
@@ -1300,6 +1469,10 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "energy": df_img["energy_score"].values,
         "max_logit": -df_img["max_logit"].values,
     }
+    if "scale_energy" in df_img.columns:
+        teacher_budget_methods["scale"] = df_img["scale_energy"].values
+    if "fdbd_score" in df_img.columns:
+        teacher_budget_methods["fdbd"] = -df_img["fdbd_score"].values
     if "mc_entropy" in df_img.columns:
         teacher_budget_methods["mc_dropout"] = df_img["mc_entropy"].values
     if "ensemble_entropy" in df_img.columns:
@@ -1427,6 +1600,12 @@ def evaluate_one_run(args: argparse.Namespace) -> None:
         "energy": "energy_fail_score",
         "max_logit": "max_logit_fail_score",
     }
+    if "scale_energy" in df_fail.columns:
+        df_fail["scale_fail_score"] = df_fail["scale_energy"].astype(float)
+        score_cols["scale"] = "scale_fail_score"
+    if "fdbd_score" in df_fail.columns:
+        df_fail["fdbd_fail_score"] = -df_fail["fdbd_score"].astype(float)
+        score_cols["fdbd"] = "fdbd_fail_score"
     if "mc_entropy" in df_fail.columns:
         df_fail["mc_dropout_fail_score"] = df_fail["mc_entropy"].astype(float)
         score_cols["mc_dropout"] = "mc_dropout_fail_score"
@@ -1804,6 +1983,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--num-workers", type=int, default=0)
     p_eval.add_argument("--temperature", type=float, default=2.0)
     p_eval.add_argument("--mc-dropout-passes", type=int, default=0)
+    p_eval.add_argument("--scale-percentile", type=float, default=85.0,
+                        help="SCALE pruning percentile (ICLR 2024 default: 85)")
+    p_eval.add_argument("--fdbd-mu-path", default=None,
+                        help="Cached train-feature mean .npy (default: alongside --student-ckpt)")
+    p_eval.add_argument("--fdbd-fit-path", default=None,
+                        help="Cityscapes root used to fit the fDBD train-feature mean if uncached")
+    p_eval.add_argument("--fdbd-fit-images", type=int, default=200)
+    p_eval.add_argument("--no-feature-ood", action="store_true",
+                        help="Skip the SCALE / fDBD feature taps")
     p_eval.add_argument("--teacher-budgets", default=None, help="Comma-separated list, e.g. 0,0.01,0.05,0.1,0.2,0.5,1.0")
     p_eval.add_argument("--coverages", default=None, help="Comma-separated list for risk-coverage output")
     p_eval.add_argument("--confident-thresholds", default=None, help="Comma-separated list, e.g. 0.9,0.95,0.97")
